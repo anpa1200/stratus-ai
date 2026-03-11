@@ -7,3 +7,14 @@ output/
 *.md~
 .venv/
 venv/
+
+# Terraform state and secrets — never commit these
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfplan
+terraform/examples/**/.terraform/
+terraform/examples/**/terraform.tfvars
+terraform/examples/**/terraform.tfstate*

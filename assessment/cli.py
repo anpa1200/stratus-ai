@@ -17,6 +17,40 @@ from assessment.ai.client import InsufficientCreditsError
 from assessment.config import DEFAULT_MODEL, DEFAULT_AWS_REGIONS
 
 
+def _resolve_anthropic_key() -> str:
+    """
+    Resolve Anthropic API key from environment or SSM Parameter Store.
+    SSM is used when running as an ECS task (no env vars with secrets).
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        return key
+
+    ssm_name = os.environ.get("ANTHROPIC_API_KEY_SSM", "")
+    if ssm_name:
+        try:
+            import boto3
+            ssm = boto3.client("ssm")
+            resp = ssm.get_parameter(Name=ssm_name, WithDecryption=True)
+            return resp["Parameter"]["Value"]
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"SSM key fetch failed: {e}")
+
+    return ""
+
+
+def _upload_to_s3(local_path: Path, bucket: str, prefix: str, log):
+    """Upload a file to S3. Called after local report generation."""
+    try:
+        import boto3
+        s3 = boto3.client("s3")
+        key = f"{prefix.rstrip('/')}/{local_path.name}"
+        s3.upload_file(str(local_path), bucket, key)
+        log.info(f"  S3:       s3://{bucket}/{key}")
+    except Exception as e:
+        log.warning(f"  S3 upload failed: {e}")
+
+
 def _setup_logging(verbose: bool):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -48,13 +82,34 @@ def _setup_logging(verbose: bool):
               help="Claude model to use")
 @click.option("--output-dir", default="./output", show_default=True,
               help="Directory for report output")
+@click.option("--output-s3", default="", envvar="OUTPUT_S3_BUCKET",
+              help="S3 bucket name to upload reports (also reads OUTPUT_S3_BUCKET env var)")
+@click.option("--output-s3-prefix", default="reports/", show_default=True, envvar="OUTPUT_S3_PREFIX",
+              help="S3 key prefix for uploaded reports")
 @click.option("--verbose", is_flag=True, help="Verbose logging")
 def main(provider, mode, target, region, all_regions, profile, modules, skip,
-         no_ai, severity, model, output_dir, verbose):
-    """StratusAI — Dockerized cloud security assessment with AI-powered analysis."""
+         no_ai, severity, model, output_dir, output_s3, output_s3_prefix, verbose):
+    """StratusAI — AI-powered cloud security assessment tool."""
 
     _setup_logging(verbose)
     log = logging.getLogger(__name__)
+
+    # ── Provider availability check ───────────────────────────────────────────
+    if provider in ("gcp", "azure"):
+        log.error(f"Provider '{provider}' is not yet implemented. Only 'aws' is supported.")
+        log.error("External scanning works for any provider: --mode external --target <host>")
+        sys.exit(1)
+
+    # ── Resolve Anthropic API key (env var or SSM) ────────────────────────────
+    if not no_ai:
+        api_key = _resolve_anthropic_key()
+        if api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+        else:
+            log.error("ANTHROPIC_API_KEY is not set. Use --no-ai to skip AI analysis.")
+            log.error("  export ANTHROPIC_API_KEY=sk-ant-...")
+            log.error("  Or set ANTHROPIC_API_KEY_SSM to an SSM parameter name.")
+            sys.exit(1)
 
     # ── Resolve regions ──────────────────────────────────────────────────────
     if all_regions:
@@ -87,6 +142,14 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
             log.warning("Continuing with external scan only")
             mode = "external"
 
+    # ── External target validation ────────────────────────────────────────────
+    if mode == "external" and not target:
+        log.error("--target <hostname/IP> is required for --mode external")
+        sys.exit(1)
+    if mode == "both" and not target:
+        log.warning("--target not provided; running internal-only (no external scans).")
+        mode = "internal"
+
     # Select modules
     scanners = _build_scanners(provider, mode, session, regions, target, modules, skip)
 
@@ -118,6 +181,8 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         ]
         raw_file.write_text(json.dumps(raw_data, default=str, indent=2))
         log.info(f"\n► Raw output: {raw_file}")
+        if output_s3:
+            _upload_to_s3(raw_file, output_s3, output_s3_prefix, log)
         return
 
     # ── Stage 2: AI Analysis ─────────────────────────────────────────────────
@@ -125,7 +190,7 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
     log.info("  Analyzing modules...")
 
     try:
-        analyze_modules(
+        token_usage = analyze_modules(
             module_results,
             account_id=account_id,
             region=", ".join(regions),
@@ -133,7 +198,7 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
             model=model,
         )
         log.info("  Running synthesis...")
-        synthesis = synthesize(module_results, model=model)
+        synthesis, synth_usage = synthesize(module_results, model=model)
     except InsufficientCreditsError as e:
         log.error(f"\n{e}")
         log.error("Use --no-ai to run without AI analysis.")
@@ -142,6 +207,10 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         log.error(f"\nAI analysis failed: {e}")
         log.error("Use --no-ai to generate raw output only.")
         sys.exit(1)
+
+    # Aggregate token usage
+    total_input = token_usage.get("input_tokens", 0) + synth_usage.get("input_tokens", 0)
+    total_output = token_usage.get("output_tokens", 0) + synth_usage.get("output_tokens", 0)
 
     # ── Build Report ─────────────────────────────────────────────────────────
     sev_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -164,6 +233,9 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         for ac in synthesis.get("attack_chains", [])
     ]
 
+    from assessment.ai.client import estimate_cost
+    estimated_cost = estimate_cost(model, total_input, total_output)
+
     report = Report(
         scan_id=str(uuid.uuid4())[:8],
         timestamp=datetime.now(timezone.utc),
@@ -179,6 +251,10 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         overall_risk_rating=synthesis.get("overall_risk_rating", "UNKNOWN"),
         overall_risk_score=synthesis.get("overall_risk_score", 0),
         executive_summary=synthesis.get("executive_summary", ""),
+        total_input_tokens=total_input,
+        total_output_tokens=total_output,
+        estimated_cost_usd=estimated_cost,
+        model_used=model,
     )
 
     # ── Stage 3: Reports ─────────────────────────────────────────────────────
@@ -200,6 +276,11 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
     log.info(f"  HTML:     {html_file}")
     log.info(f"  Markdown: {md_file}")
 
+    # ── Upload to S3 (if configured) ─────────────────────────────────────────
+    if output_s3:
+        _upload_to_s3(html_file, output_s3, output_s3_prefix, log)
+        _upload_to_s3(md_file, output_s3, output_s3_prefix, log)
+
     # ── Summary ──────────────────────────────────────────────────────────────
     counts = {s: 0 for s in sev_order}
     for f in all_findings:
@@ -210,14 +291,16 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         top_action = top_action[:77] + "..."
 
     print(f"""
-╔══════════════════ SUMMARY ══════════════════╗
+╔══════════════════════ SUMMARY ════════════════════════╗
   Overall Risk: {report.overall_risk_rating} ({report.overall_risk_score}/100)
   Provider: {provider.upper()} — {account_id}
   Findings:
     {counts['CRITICAL']} Critical  {counts['HIGH']} High  {counts['MEDIUM']} Medium  {counts['LOW']} Low
 
   Top Action: {top_action}
-╚══════════════════════════════════════════════╝""")
+
+  AI Cost: ${estimated_cost:.4f} ({total_input:,} in / {total_output:,} out tokens)
+╚════════════════════════════════════════════════════════╝""")
 
 
 def _build_scanners(provider, mode, session, regions, target, modules_str, skip_str):
@@ -239,18 +322,14 @@ def _build_scanners(provider, mode, session, regions, target, modules_str, skip_
                     scanners.append(cls(session=session, region=region))
 
     # External scanners
-    if mode in ("external", "both"):
-        if not target and mode == "external":
-            import click
-            raise click.UsageError("--target is required for external mode")
-        if target:
-            from assessment.scanners.external import EXTERNAL_SCANNERS
-            for name, cls in EXTERNAL_SCANNERS.items():
-                if name in skipped:
-                    continue
-                if requested and name not in requested:
-                    continue
-                scanners.append(cls(target=target))
+    if mode in ("external", "both") and target:
+        from assessment.scanners.external import EXTERNAL_SCANNERS
+        for name, cls in EXTERNAL_SCANNERS.items():
+            if name in skipped:
+                continue
+            if requested and name not in requested:
+                continue
+            scanners.append(cls(target=target))
 
     return scanners
 

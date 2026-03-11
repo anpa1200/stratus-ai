@@ -22,6 +22,10 @@ SENSITIVE_PORTS = {
     2376: "Docker API",
     4243: "Docker API",
     11211: "Memcached",
+    5601: "Kibana",
+    8500: "Consul",
+    2181: "Zookeeper",
+    9092: "Kafka",
 }
 
 # IAM managed policies that should trigger HIGH finding if attached to users directly
@@ -29,6 +33,8 @@ OVERPRIVILEGED_MANAGED_POLICIES = {
     "arn:aws:iam::aws:policy/AdministratorAccess",
     "arn:aws:iam::aws:policy/IAMFullAccess",
     "arn:aws:iam::aws:policy/PowerUserAccess",
+    "arn:aws:iam::aws:policy/AmazonEC2FullAccess",
+    "arn:aws:iam::aws:policy/AmazonS3FullAccess",
 }
 
 # IAM inline policy actions that are always concerning
@@ -61,6 +67,8 @@ EXPECTED_SECURITY_HEADERS = [
     "X-Frame-Options",
     "Content-Security-Policy",
     "X-XSS-Protection",
+    "Permissions-Policy",
+    "Referrer-Policy",
 ]
 
 # ─── AI settings ──────────────────────────────────────────────────────────────
@@ -68,3 +76,36 @@ EXPECTED_SECURITY_HEADERS = [
 DEFAULT_MODEL = "claude-sonnet-4-6"
 MAX_SCAN_OUTPUT_CHARS = 40_000
 INTER_REQUEST_DELAY = 3          # seconds between sequential AI calls
+
+# ─── Claude model pricing (USD per million tokens) ────────────────────────────
+# Prices as of 2025. Update when pricing changes.
+
+MODEL_PRICING = {
+    "claude-opus-4-6":            {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-6":          {"input": 3.00,  "output": 15.00},
+    "claude-haiku-4-5-20251001":  {"input": 0.25,  "output": 1.25},
+    # Legacy names
+    "claude-3-5-sonnet-20241022": {"input": 3.00,  "output": 15.00},
+    "claude-3-haiku-20240307":    {"input": 0.25,  "output": 1.25},
+}
+
+# ─── Lambda security ─────────────────────────────────────────────────────────
+
+# Lambda runtimes considered EOL / deprecated
+DEPRECATED_LAMBDA_RUNTIMES = {
+    "python2.7", "python3.6", "python3.7",
+    "nodejs10.x", "nodejs12.x", "nodejs14.x",
+    "ruby2.5", "ruby2.7",
+    "java8", "dotnetcore2.1", "dotnetcore3.1",
+    "go1.x",
+}
+
+# ─── Secrets Manager ─────────────────────────────────────────────────────────
+
+# Secrets not rotated in this many days are flagged
+SECRETS_ROTATION_WARN_DAYS = 90
+
+# ─── KMS ─────────────────────────────────────────────────────────────────────
+
+# KMS keys not rotated (annual rotation disabled) are flagged
+KMS_ROTATION_REQUIRED = True

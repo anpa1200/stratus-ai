@@ -2,6 +2,7 @@
 AWS S3 scanner — public buckets, encryption, versioning, logging, replication.
 """
 import logging
+from botocore.exceptions import ClientError
 from assessment.scanners.base import BaseScanner
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,14 @@ def _scan_all_buckets(s3) -> list:
                     "BlockPublicAcls", "IgnorePublicAcls",
                     "BlockPublicPolicy", "RestrictPublicBuckets"
                 ])
-            except s3.exceptions.NoSuchPublicAccessBlockConfiguration:
-                info["public_access_block"] = "not configured"
-                info["all_public_access_blocked"] = False
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "NoSuchPublicAccessBlockConfiguration":
+                    info["public_access_block"] = "not configured"
+                    info["all_public_access_blocked"] = False
+                else:
+                    info["public_access_block"] = f"error: {e}"
+                    info["all_public_access_blocked"] = False
             except Exception as e:
                 info["public_access_block"] = f"error: {e}"
                 info["all_public_access_blocked"] = False
@@ -83,9 +89,13 @@ def _scan_all_buckets(s3) -> list:
                 info["has_bucket_policy"] = True
                 info["policy_allows_public"] = _policy_allows_public(doc)
                 info["bucket_policy_summary"] = _summarise_policy(doc)
-            except s3.exceptions.NoSuchBucketPolicy:
-                info["has_bucket_policy"] = False
-                info["policy_allows_public"] = False
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "NoSuchBucketPolicy":
+                    info["has_bucket_policy"] = False
+                    info["policy_allows_public"] = False
+                else:
+                    info["bucket_policy"] = f"error: {e}"
             except Exception as e:
                 info["bucket_policy"] = f"error: {e}"
 
@@ -94,8 +104,12 @@ def _scan_all_buckets(s3) -> list:
                 enc = s3.get_bucket_encryption(Bucket=name)
                 rules = enc["ServerSideEncryptionConfiguration"]["Rules"]
                 info["encryption"] = rules[0]["ApplyServerSideEncryptionByDefault"]["SSEAlgorithm"] if rules else "none"
-            except s3.exceptions.ServerSideEncryptionConfigurationNotFoundError:
-                info["encryption"] = "none"
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "ServerSideEncryptionConfigurationNotFoundError":
+                    info["encryption"] = "none"
+                else:
+                    info["encryption"] = "unknown"
             except Exception:
                 info["encryption"] = "unknown"
 

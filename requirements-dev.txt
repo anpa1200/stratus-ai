@@ -1,0 +1,6 @@
+# Development and testing dependencies
+-r requirements.txt
+
+pytest>=7.4.0
+pytest-cov>=4.1.0
+moto[iam,s3,ec2,lambda,kms,secretsmanager,sts,ecs]>=5.0.0

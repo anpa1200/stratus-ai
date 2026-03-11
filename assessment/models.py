@@ -31,6 +31,8 @@ class ModuleResult:
     module_summary: str = ""
     duration_seconds: float = 0.0
     error: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -58,3 +60,7 @@ class Report:
     overall_risk_rating: str = "UNKNOWN"
     overall_risk_score: int = 0
     executive_summary: str = ""
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    model_used: str = ""

@@ -1,0 +1,71 @@
+# StratusAI Terraform Configuration
+# Copy this file to terraform.tfvars and fill in your values.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   # Edit terraform.tfvars
+#   terraform init && terraform apply
+
+# ─── Required ─────────────────────────────────────────────────────────────────
+
+# Your Anthropic API key — stored encrypted in SSM Parameter Store, never in
+# the ECS task definition or Docker image.
+anthropic_api_key = "sk-ant-..."
+
+# ─── Common settings ──────────────────────────────────────────────────────────
+
+aws_region  = "us-east-1"
+environment = "prod"
+name_prefix = "stratusai"
+
+# ─── Scan configuration ───────────────────────────────────────────────────────
+
+# Region(s) to scan (comma-separated)
+scan_regions = "us-east-1"
+
+# Which modules to run (empty = all)
+# scan_modules = "iam,s3,ec2"
+
+# Minimum severity to include in reports
+scan_severity = "LOW"
+
+# Claude model — sonnet is the best balance of cost/quality
+claude_model = "claude-sonnet-4-6"
+
+# ─── External scan (optional) ─────────────────────────────────────────────────
+
+# Set to true to also scan public endpoints (ports, SSL, HTTP headers, DNS)
+enable_external_scan = false
+external_scan_target = ""  # e.g., "company.com"
+
+# ─── Scheduled scans (optional) ───────────────────────────────────────────────
+
+# Enable automated weekly scans via EventBridge
+enable_scheduler = false
+
+# Cron or rate expression (UTC)
+# schedule_expression = "cron(0 8 ? * MON *)"   # Every Monday 08:00 UTC
+# schedule_expression = "rate(7 days)"           # Every 7 days
+
+# Email address for scan notifications (creates SNS topic)
+# notification_email = "security@company.com"
+
+# ─── Storage ──────────────────────────────────────────────────────────────────
+
+report_retention_days = 90
+enable_s3_versioning  = true
+
+# ─── ECS resource sizing ──────────────────────────────────────────────────────
+
+# 512 CPU / 1024 MB is sufficient for most scans
+task_cpu    = 512
+task_memory = 1024
+
+# ─── Networking ───────────────────────────────────────────────────────────────
+
+# Leave empty to auto-detect the default VPC and public subnets
+vpc_id     = ""
+subnet_ids = []
+
+# Or specify explicitly:
+# vpc_id     = "vpc-0123456789abcdef0"
+# subnet_ids = ["subnet-0123456789abcdef0", "subnet-abcdef0123456789"]

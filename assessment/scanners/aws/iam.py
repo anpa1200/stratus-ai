@@ -76,14 +76,18 @@ def _get_password_policy(iam) -> dict:
 def _check_root_account(iam) -> dict:
     """Check root account security posture via credential report."""
     try:
-        # Generate credential report
         import time
         iam.generate_credential_report()
-        # Wait for it (usually instant)
-        for _ in range(10):
-            resp = iam.get_credential_report()
-            content = resp["Content"].decode("utf-8")
-            break
+        content = None
+        for _ in range(12):
+            try:
+                resp = iam.get_credential_report()
+                content = resp["Content"].decode("utf-8")
+                break
+            except iam.exceptions.ReportNotPresent:
+                time.sleep(0.5)
+        if content is None:
+            return {"error": "credential report not ready after retries"}
         lines = content.strip().splitlines()
         if len(lines) < 2:
             return {"error": "credential report too short"}

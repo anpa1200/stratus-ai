@@ -3,8 +3,8 @@ External port scanner — nmap against public endpoints.
 """
 import logging
 import subprocess
-import re
 import shutil
+import xml.etree.ElementTree as ET
 from assessment.scanners.base import BaseScanner
 from assessment.config import EXTERNAL_SCAN_PORTS
 
@@ -37,7 +37,6 @@ def _run_nmap(target: str) -> dict:
         out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=180, text=True)
         return {
             "target": target,
-            "xml": out,
             "open_ports": _parse_nmap_xml(out),
         }
     except subprocess.TimeoutExpired:
@@ -48,21 +47,27 @@ def _run_nmap(target: str) -> dict:
         return {"error": str(e), "target": target}
 
 
-def _parse_nmap_xml(xml: str) -> list:
+def _parse_nmap_xml(xml_text: str) -> list:
+    """Parse nmap XML output using ElementTree (not regex)."""
     ports = []
     try:
-        for m in re.finditer(
-            r'<port protocol="(\w+)" portid="(\d+)".*?'
-            r'<state state="(\w+)".*?'
-            r'(?:<service name="([^"]*)"[^>]*/?>)?',
-            xml, re.DOTALL
-        ):
-            if m.group(3) == "open":
+        root = ET.fromstring(xml_text)
+        for host in root.findall("host"):
+            ports_elem = host.find("ports")
+            if ports_elem is None:
+                continue
+            for port_elem in ports_elem.findall("port"):
+                state = port_elem.find("state")
+                if state is None or state.get("state") != "open":
+                    continue
+                service = port_elem.find("service")
                 ports.append({
-                    "protocol": m.group(1),
-                    "port": int(m.group(2)),
-                    "service": m.group(4) or "",
+                    "protocol": port_elem.get("protocol", ""),
+                    "port": int(port_elem.get("portid", 0)),
+                    "service": service.get("name", "") if service is not None else "",
+                    "product": service.get("product", "") if service is not None else "",
+                    "version": service.get("version", "") if service is not None else "",
                 })
-    except Exception:
-        pass
+    except ET.ParseError as e:
+        logger.warning(f"nmap XML parse error: {e}")
     return ports

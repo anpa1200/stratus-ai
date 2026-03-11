@@ -23,6 +23,12 @@ def generate_markdown(report: Report) -> str:
     lines.append(f"**Account:** {report.account_id}  ")
     lines.append(f"**Regions:** {', '.join(report.regions)}  ")
     lines.append(f"**Mode:** {report.mode}  ")
+    if report.model_used:
+        lines.append(
+            f"**AI Model:** {report.model_used} — "
+            f"{report.total_input_tokens:,} in / {report.total_output_tokens:,} out tokens — "
+            f"Est. cost: ${report.estimated_cost_usd:.4f}  "
+        )
     lines.append(f"")
 
     # Risk badge

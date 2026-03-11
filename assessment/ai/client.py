@@ -1,10 +1,13 @@
 """
-Anthropic API client wrapper with retry logic and billing error fast-fail.
+Anthropic API client wrapper with retry logic, billing error fast-fail, and token tracking.
+Returns (text, usage_dict) so callers can track token costs.
 """
 import time
 import logging
 import json
 import anthropic
+
+from assessment.config import MODEL_PRICING
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +39,11 @@ def call_claude(
     system: str,
     user_content: str,
     max_tokens: int = 8192,
-) -> str:
-    """Call Claude with retry logic. Returns the text response."""
+) -> tuple[str, dict]:
+    """
+    Call Claude with retry logic.
+    Returns (text_response, usage_dict) where usage_dict has input_tokens and output_tokens.
+    """
     client = anthropic.Anthropic()
 
     for attempt in range(MAX_RETRIES):
@@ -48,7 +54,11 @@ def call_claude(
                 system=system,
                 messages=[{"role": "user", "content": user_content}],
             )
-            return resp.content[0].text
+            usage = {
+                "input_tokens": resp.usage.input_tokens,
+                "output_tokens": resp.usage.output_tokens,
+            }
+            return resp.content[0].text, usage
 
         except anthropic.AuthenticationError as e:
             raise RuntimeError(f"Authentication failed: {e}") from e
@@ -88,3 +98,11 @@ def call_claude(
             time.sleep(delay)
 
     raise RuntimeError("Max retries exceeded")
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate USD cost for a Claude API call based on token counts."""
+    pricing = MODEL_PRICING.get(model, MODEL_PRICING["claude-sonnet-4-6"])
+    cost = (input_tokens / 1_000_000 * pricing["input"] +
+            output_tokens / 1_000_000 * pricing["output"])
+    return round(cost, 6)
