@@ -32,11 +32,12 @@
     - [Deploying a New Image](#deploying-a-new-image)
     - [Running On-Demand](#running-on-demand-from-aws-console-or-cli)
 11. [Running Locally](#running-locally)
-12. [Lessons Learned](#lessons-learned)
-13. [Cost and Performance](#cost-and-performance)
-14. [What's Next](#whats-next)
-15. [Full Quick-Start Reference](#full-quick-start-reference)
-16. [Conclusion](#conclusion)
+12. [Quick Start with the Wizard](#quick-start-with-the-wizard)
+13. [Lessons Learned](#lessons-learned)
+14. [Cost and Performance](#cost-and-performance)
+15. [What's Next](#whats-next)
+16. [Full Quick-Start Reference](#full-quick-start-reference)
+17. [Conclusion](#conclusion)
 
 ---
 
@@ -1007,6 +1008,161 @@ stratus --provider aws --output-s3 my-security-reports-bucket
   AI Cost: $0.0847 (45,230 in / 8,102 out tokens)
 ╚════════════════════════════════════════════════════════╝
 ```
+
+---
+
+## Quick Start with the Wizard
+
+If you'd rather not memorize CLI flags, `wizard.sh` walks you through every parameter interactively and builds the correct command for you.
+
+```bash
+chmod +x wizard.sh
+./wizard.sh
+```
+
+The wizard runs in seven steps:
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║          StratusAI — Interactive Setup Wizard                   ║
+║          AWS · GCP · External  ×  Claude · GPT-4o · Gemini      ║
+╚══════════════════════════════════════════════════════════════════╝
+
+  Step 1: Execution mode ........... Docker (recommended) or local Python
+  Step 2: Cloud provider ........... AWS / GCP / External-only
+  Step 3: Scan mode + target ....... Internal / External / Both  +  hostname
+  Step 4: Cloud credentials ........ AWS profile + region  OR  GCP project + ADC
+  Step 5: AI model + API key ....... Claude / GPT-4o / Gemini  (with cost hints)
+  Step 6: Options .................. Severity filter, module list, context, output dir
+  Step 7: Review + launch .......... Shows the full command, asks for confirmation
+```
+
+### Step-by-step walkthrough
+
+**Step 1 — Execution mode**
+
+```
+How do you want to run StratusAI?
+  1) Docker (recommended — no local Python dependencies)
+  2) Local Python (requires pip install -r requirements.txt)
+
+Choice [1]: 1
+```
+
+Docker mode mounts your `~/.aws` or `~/.config/gcloud` credentials inside the container, so no credentials are baked into the image.
+
+**Step 2 — Cloud provider**
+
+```
+Which cloud provider do you want to scan?
+  1) AWS
+  2) GCP (Google Cloud)
+  3) External only (web app / hostname — no cloud credentials needed)
+
+Choice [1]: 1
+```
+
+**Step 3 — Scan mode**
+
+```
+Scan mode:
+  1) Internal   — cloud API scan (IAM, compute, storage, …)
+  2) External   — web/network scan of a public hostname
+  3) Both       — run internal + external together
+
+Choice [1]: 3
+
+External target hostname or IP (e.g. api.example.com): myapp.example.com
+```
+
+**Step 4 — Cloud credentials**
+
+For AWS the wizard reads your configured profiles and lets you pick:
+
+```
+AWS profile [default]:
+AWS region  [us-east-1]:
+```
+
+For GCP it checks whether Application Default Credentials exist at `~/.config/gcloud/application_default_credentials.json` and prompts for a project ID:
+
+```
+GCP project ID: my-project-123
+✓  ADC found at ~/.config/gcloud/application_default_credentials.json
+```
+
+**Step 5 — AI model**
+
+```
+Choose AI model:
+  1) claude-sonnet-4-6   (Anthropic — best quality, ~$0.08/scan)
+  2) claude-haiku-4-5    (Anthropic — fast + cheap, ~$0.01/scan)
+  3) gpt-4o              (OpenAI    — strong alternative, ~$0.10/scan)
+  4) o3-mini             (OpenAI    — reasoning model, ~$0.06/scan)
+  5) gemini-2.0-flash    (Google    — very cheap, ~$0.005/scan)
+  6) Custom model ID
+
+Choice [1]: 1
+
+Anthropic API key (input hidden): ****
+```
+
+**Step 6 — Options**
+
+```
+Minimum severity to include [INFO / LOW / MEDIUM / HIGH / CRITICAL] [INFO]: MEDIUM
+Modules to run (comma-separated, or press Enter for all):
+Environment context (helps the AI tailor findings):
+  e.g. "Production fintech, PCI DSS scope"
+  [leave blank to skip]: Production SaaS, handles PII
+Output directory [./output]:
+```
+
+**Step 7 — Review and launch**
+
+The wizard prints the full Docker command so you can inspect it before anything runs:
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                    Configuration Summary                        ║
+╚══════════════════════════════════════════════════════════════════╝
+
+  Execution:   Docker
+  Provider:    AWS
+  Mode:        both
+  Target:      myapp.example.com
+  Region:      us-east-1
+  Profile:     default
+  AI Model:    claude-sonnet-4-6
+  Severity:    MEDIUM
+  Context:     Production SaaS, handles PII
+  Output:      ./output
+
+Command:
+  docker run --rm \
+    -e ANTHROPIC_API_KEY=**** \
+    -e AWS_REGION=us-east-1 \
+    -v ~/.aws:/root/.aws:ro \
+    -v ./output:/app/output \
+    stratus-ai \
+      --provider aws --mode both --target myapp.example.com \
+      --model claude-sonnet-4-6 \
+      --context "Production SaaS, handles PII" \
+      --severity MEDIUM \
+      --output-dir /app/output
+
+Launch? [y/N]: y
+```
+
+### When to use the wizard vs the CLI directly
+
+| Scenario | Use |
+|---|---|
+| First time running StratusAI | `./wizard.sh` |
+| Iterating quickly in a terminal | `stratus --provider aws ...` |
+| CI/CD pipeline | CLI with env vars |
+| Sharing a runbook with the team | Wizard — shows the full command for copy-paste |
+| Comparing providers (AWS vs GCP) | Wizard — guides credential setup per provider |
 
 ---
 
