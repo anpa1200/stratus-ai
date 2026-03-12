@@ -304,9 +304,121 @@ def _process_dns(raw: dict) -> dict:
     return raw
 
 
+# ─── GCP handlers ─────────────────────────────────────────────────────────────
+
+def _process_gcp_iam(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", "")}
+    out["public_bindings"] = raw.get("public_bindings", [])
+    out["overprivileged_bindings"] = raw.get("overprivileged_bindings", [])
+
+    sas = raw.get("service_accounts", [])
+    flagged_sas = []
+    for sa in sas:
+        if sa.get("error") or sa.get("disabled"):
+            continue
+        issues = []
+        keys = sa.get("keys", [])
+        user_keys = [k for k in keys if not k.get("error")]
+        if user_keys:
+            issues.append(f"{len(user_keys)} user-managed key(s)")
+            for k in user_keys:
+                if k.get("critical_age"):
+                    issues.append(f"key age {k.get('age_days')}d (CRITICAL)")
+                elif k.get("stale"):
+                    issues.append(f"key age {k.get('age_days')}d (stale)")
+        if issues:
+            sa["_issues"] = issues
+            flagged_sas.append(sa)
+
+    out["flagged_service_accounts"] = flagged_sas
+    out["total_service_accounts"] = len(sas)
+    return out
+
+
+def _process_gcp_compute(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", ""), "region": raw.get("region", "")}
+    out["risky_firewall_rules"] = raw.get("risky_firewall_rules", [])
+    out["total_firewall_rules"] = len(raw.get("firewall_rules", []))
+
+    instances = raw.get("instances", [])
+    out["total_instances"] = len(instances)
+    out["flagged_instances"] = [i for i in instances if i.get("issues") and i.get("status") == "RUNNING"]
+
+    dvpc = raw.get("default_vpc_exists", {})
+    if dvpc.get("exists"):
+        out["default_vpc"] = dvpc
+    return out
+
+
+def _process_gcp_storage(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", "")}
+    buckets = raw.get("buckets", [])
+    out["total_buckets"] = len(buckets)
+    flagged = [b for b in buckets if b.get("issues") or b.get("public_bindings")]
+    out["flagged_buckets"] = flagged
+    out["clean_bucket_count"] = len(buckets) - len(flagged)
+    return out
+
+
+def _process_gcp_cloudfunctions(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", ""), "region": raw.get("region", "")}
+    functions = raw.get("functions", [])
+    out["total_functions"] = len(functions)
+    flagged = [f for f in functions if f.get("issues")]
+    out["flagged_functions"] = flagged
+    out["clean_function_count"] = len(functions) - len(flagged)
+    return out
+
+
+def _process_gcp_cloudrun(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", ""), "region": raw.get("region", "")}
+    services = raw.get("services", [])
+    out["total_services"] = len(services)
+    flagged = [s for s in services if s.get("issues")]
+    out["flagged_services"] = flagged
+    out["clean_service_count"] = len(services) - len(flagged)
+    return out
+
+
+def _process_gcp_secretmanager(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", "")}
+    secrets = raw.get("secrets", [])
+    out["total_secrets"] = len(secrets)
+    flagged = [s for s in secrets if s.get("issues")]
+    out["flagged_secrets"] = flagged
+    out["clean_secret_count"] = len(secrets) - len(flagged)
+    return out
+
+
+def _process_gcp_logging(raw: dict) -> dict:
+    out = {"project_id": raw.get("project_id", "")}
+    audit = raw.get("audit_log_config", {})
+    out["audit_log_config"] = {
+        "data_read_enabled": audit.get("data_read_enabled"),
+        "data_write_enabled": audit.get("data_write_enabled"),
+        "admin_read_enabled": audit.get("admin_read_enabled"),
+        "issues": audit.get("issues", []),
+        "note": audit.get("note", ""),
+    }
+    sinks = raw.get("log_sinks", {})
+    out["log_sinks"] = {
+        "total_sinks": sinks.get("total_sinks", 0),
+        "has_export": sinks.get("has_export", False),
+        "issues": sinks.get("issues", []),
+    }
+    vpc_flow = raw.get("vpc_flow_logs", {})
+    out["vpc_flow_logs"] = {
+        "total_subnets": vpc_flow.get("total_subnets", 0),
+        "subnets_with_flow_logs": vpc_flow.get("subnets_with_flow_logs", 0),
+        "issues": vpc_flow.get("issues", []),
+    }
+    return out
+
+
 # ─── Handler registry ─────────────────────────────────────────────────────────
 
 _HANDLERS = {
+    # AWS
     "iam": _process_iam,
     "s3": _process_s3,
     "ec2": _process_ec2,
@@ -316,8 +428,17 @@ _HANDLERS = {
     "kms": _process_kms,
     "secrets_manager": _process_secrets_manager,
     "eks": _process_eks,
+    # External
     "ports": _process_ports,
     "ssl": _process_ssl,
     "http_headers": _process_http_headers,
     "dns": _process_dns,
+    # GCP
+    "gcp_iam": _process_gcp_iam,
+    "gcp_compute": _process_gcp_compute,
+    "gcp_storage": _process_gcp_storage,
+    "gcp_cloudfunctions": _process_gcp_cloudfunctions,
+    "gcp_cloudrun": _process_gcp_cloudrun,
+    "gcp_secretmanager": _process_gcp_secretmanager,
+    "gcp_logging": _process_gcp_logging,
 }

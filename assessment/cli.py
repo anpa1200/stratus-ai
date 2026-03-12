@@ -58,8 +58,12 @@ def _setup_logging(verbose: bool):
         level=level,
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    # Suppress noisy AWS SDK logs
-    for noisy in ("botocore", "boto3", "urllib3", "s3transfer"):
+    # Suppress noisy SDK logs
+    for noisy in (
+        "botocore", "boto3", "urllib3", "s3transfer",
+        "google.auth", "google.api_core", "google.auth.transport",
+        "googleapiclient.discovery", "googleapiclient.discovery_cache",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -72,6 +76,8 @@ def _setup_logging(verbose: bool):
 @click.option("--region", default="", help="Cloud region (default: us-east-1 for AWS)")
 @click.option("--all-regions", is_flag=True, help="Scan all default regions (AWS)")
 @click.option("--profile", default="", help="AWS CLI profile name")
+@click.option("--project", default="", envvar="GOOGLE_CLOUD_PROJECT",
+              help="GCP project ID (GCP only; also reads GOOGLE_CLOUD_PROJECT env var)")
 @click.option("--modules", default="", help="Comma-separated list of modules to run")
 @click.option("--skip", default="", help="Comma-separated list of modules to skip")
 @click.option("--no-ai", is_flag=True, help="Skip AI analysis (raw scanner output only)")
@@ -87,7 +93,7 @@ def _setup_logging(verbose: bool):
 @click.option("--output-s3-prefix", default="reports/", show_default=True, envvar="OUTPUT_S3_PREFIX",
               help="S3 key prefix for uploaded reports")
 @click.option("--verbose", is_flag=True, help="Verbose logging")
-def main(provider, mode, target, region, all_regions, profile, modules, skip,
+def main(provider, mode, target, region, all_regions, profile, project, modules, skip,
          no_ai, severity, model, output_dir, output_s3, output_s3_prefix, verbose):
     """StratusAI — AI-powered cloud security assessment tool."""
 
@@ -95,8 +101,8 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
     log = logging.getLogger(__name__)
 
     # ── Provider availability check ───────────────────────────────────────────
-    if provider in ("gcp", "azure"):
-        log.error(f"Provider '{provider}' is not yet implemented. Only 'aws' is supported.")
+    if provider == "azure":
+        log.error("Provider 'azure' is not yet implemented.")
         log.error("External scanning works for any provider: --mode external --target <host>")
         sys.exit(1)
 
@@ -116,6 +122,8 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         regions = DEFAULT_AWS_REGIONS
     elif region:
         regions = [region]
+    elif provider == "gcp":
+        regions = ["us-central1"]
     else:
         regions = ["us-east-1"] if provider == "aws" else ["global"]
 
@@ -137,6 +145,35 @@ def main(provider, mode, target, region, all_regions, profile, modules, skip,
         except Exception as e:
             log.error(f"AWS authentication failed: {e}")
             log.error("Ensure AWS credentials are configured (env vars, ~/.aws/credentials, or IAM role)")
+            if mode == "internal":
+                sys.exit(1)
+            log.warning("Continuing with external scan only")
+            mode = "external"
+
+    if provider == "gcp" and mode in ("internal", "both"):
+        try:
+            import google.auth
+            from assessment.scanners.gcp import GCPSession
+            scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+            credentials, detected_project = google.auth.default(scopes=scopes)
+            gcp_project = project or detected_project or ""
+            if not gcp_project:
+                log.error("GCP project ID not found. Set GOOGLE_CLOUD_PROJECT or use --project.")
+                if mode == "internal":
+                    sys.exit(1)
+                log.warning("Continuing with external scan only")
+                mode = "external"
+            else:
+                session = GCPSession(credentials=credentials, project_id=gcp_project)
+                account_id = gcp_project
+                log.info(f"GCP Project: {gcp_project}")
+        except Exception as e:
+            log.error(f"GCP authentication failed: {e}")
+            log.error(
+                "Ensure credentials are configured:\n"
+                "  gcloud auth application-default login\n"
+                "  or set GOOGLE_APPLICATION_CREDENTIALS to a service account key file"
+            )
             if mode == "internal":
                 sys.exit(1)
             log.warning("Continuing with external scan only")
@@ -315,6 +352,16 @@ def _build_scanners(provider, mode, session, regions, target, modules_str, skip_
             from assessment.scanners.aws import AWS_SCANNERS
             for region in regions:
                 for name, cls in AWS_SCANNERS.items():
+                    if name in skipped:
+                        continue
+                    if requested and name not in requested:
+                        continue
+                    scanners.append(cls(session=session, region=region))
+
+        elif provider == "gcp":
+            from assessment.scanners.gcp import GCP_SCANNERS
+            for region in regions:
+                for name, cls in GCP_SCANNERS.items():
                     if name in skipped:
                         continue
                     if requested and name not in requested:

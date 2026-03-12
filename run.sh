@@ -63,11 +63,16 @@ fi
 # Mount GCP credentials if set
 GCP_ARGS=()
 if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
-  GCP_ARGS=(
+  GCP_ARGS+=(
     -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro"
     -e "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json"
   )
 fi
+# Mount Application Default Credentials (from 'gcloud auth application-default login')
+if [ -d "$HOME/.config/gcloud" ]; then
+  GCP_ARGS+=(-v "$HOME/.config/gcloud:/root/.config/gcloud:ro")
+fi
+[ -n "${GOOGLE_CLOUD_PROJECT:-}" ] && GCP_ARGS+=(-e "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}")
 
 docker run --rm -it \
   "${ENV_ARGS[@]}" \
