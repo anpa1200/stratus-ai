@@ -10,3 +10,9 @@ google-auth>=2.28.0
 google-api-python-client>=2.120.0
 google-cloud-storage>=2.16.0
 google-cloud-secret-manager>=2.20.0
+
+# Optional: OpenAI models (gpt-4o, o1, o3-mini, o4-mini)
+# pip install openai>=1.0.0
+
+# Optional: Google Gemini models (gemini-2.0-flash, gemini-1.5-pro, etc.)
+# pip install google-generativeai>=0.7.0

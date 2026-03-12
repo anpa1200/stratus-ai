@@ -142,22 +142,32 @@ def _find_public_bindings(policy: dict) -> list:
     return public
 
 
+def _is_gcp_system_sa(member: str) -> bool:
+    """Return True for GCP-managed system service accounts that GCP controls internally."""
+    if not member.startswith("serviceAccount:"):
+        return False
+    email = member[len("serviceAccount:"):]
+    # System SAs use developer / appspot / cloudservices domains, not iam.gserviceaccount.com
+    return (
+        email.endswith("@developer.gserviceaccount.com")
+        or email.endswith("@appspot.gserviceaccount.com")
+        or email.endswith("@cloudservices.gserviceaccount.com")
+    )
+
+
 def _find_overprivileged_bindings(policy: dict) -> list:
-    """Find bindings with overprivileged roles granted to non-system principals."""
+    """Find bindings with overprivileged roles granted to non-system principals.
+
+    Custom service accounts (*@<project>.iam.gserviceaccount.com) are flagged;
+    GCP-internal system SAs (developer/appspot/cloudservices) are excluded.
+    """
     results = []
     for binding in policy.get("bindings", []):
         role = binding.get("role", "")
         if role not in OVERPRIVILEGED_ROLES:
             continue
         members = binding.get("members", [])
-        flagged_members = [
-            m for m in members
-            if not m.startswith("serviceAccount:") or not m.endswith(".gserviceaccount.com")
-            or "iam.gserviceaccount.com" not in m  # keep custom SAs
-        ]
-        # Always flag owner/editor regardless
-        if role in ("roles/owner", "roles/editor") and members:
-            flagged_members = members
+        flagged_members = [m for m in members if not _is_gcp_system_sa(m)]
         if flagged_members:
             results.append({
                 "role": role,

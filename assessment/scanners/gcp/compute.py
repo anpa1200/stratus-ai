@@ -168,11 +168,16 @@ def _parse_instance(inst: dict, project: str) -> dict:
             # Don't log the value, just flag the key
             sensitive_metadata.append(key)
 
-    # OS Login
+    # OS Login and legacy metadata endpoint
     os_login_enabled = None
+    legacy_metadata_enabled = True  # default: legacy endpoint enabled unless explicitly disabled
     for item in inst.get("metadata", {}).get("items", []):
-        if item.get("key") == "enable-oslogin":
-            os_login_enabled = item.get("value", "").lower() == "true"
+        k = item.get("key", "")
+        v = item.get("value", "").lower()
+        if k == "enable-oslogin":
+            os_login_enabled = v == "true"
+        if k == "disable-legacy-endpoints":
+            legacy_metadata_enabled = v != "true"
 
     # Shielded VM
     shielded_config = inst.get("shieldedInstanceConfig", {})
@@ -188,6 +193,8 @@ def _parse_instance(inst: dict, project: str) -> dict:
         issues.append(f"sensitive metadata keys: {', '.join(sensitive_metadata)}")
     if os_login_enabled is False:
         issues.append("OS Login disabled (SSH key-based auth active)")
+    if legacy_metadata_enabled:
+        issues.append("legacy metadata endpoint enabled (v0.1/v1beta1 accessible without Metadata-Flavor header)")
 
     return {
         "name": name,
@@ -202,6 +209,7 @@ def _parse_instance(inst: dict, project: str) -> dict:
         "metadata_keys": metadata_keys,
         "sensitive_metadata_keys": sensitive_metadata,
         "os_login_enabled": os_login_enabled,
+        "legacy_metadata_endpoint_enabled": legacy_metadata_enabled,
         "shielded_vm_secure_boot": shielded_config.get("enableSecureBoot", False),
         "shielded_vm_vtpm": shielded_config.get("enableVtpm", False),
         "issues": issues,

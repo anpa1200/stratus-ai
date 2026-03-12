@@ -25,6 +25,11 @@ Provider: {provider}
 Account/Project: {account_id}
 Region: {region}
 Mode: {mode}
+Environment: {account_context}
+
+ADVERSARIAL FRAMING: For each finding, reason as an attacker who has just obtained read access to this \
+cloud account. What would you do with this misconfiguration? What does it unlock? Which credential or \
+resource does it expose? This framing produces more actionable severity ratings.
 
 RAW SCAN DATA:
 {scan_output}
@@ -57,6 +62,8 @@ Output only valid JSON, no other text."""
 
 SYNTHESIS_PROMPT = """You have received cloud security assessment findings from {num_modules} scanner modules \
 for a single cloud account/environment. Perform a holistic synthesis analysis.
+
+ENVIRONMENT CONTEXT: {account_context}
 
 MODULE SUMMARIES:
 {module_summaries}

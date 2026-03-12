@@ -85,7 +85,18 @@ def _setup_logging(verbose: bool):
               type=click.Choice(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
               show_default=True, help="Minimum severity to include in report")
 @click.option("--model", default=DEFAULT_MODEL, show_default=True,
-              help="Claude model to use")
+              help=(
+                  "LLM model to use for analysis. Supported providers:\n\n"
+                  "  Anthropic (requires ANTHROPIC_API_KEY):\n"
+                  "    claude-sonnet-4-6 (default), claude-opus-4-6, claude-haiku-4-5-20251001\n\n"
+                  "  OpenAI (requires OPENAI_API_KEY):\n"
+                  "    gpt-4o, gpt-4o-mini, o1, o3-mini, o4-mini\n\n"
+                  "  Google Gemini (requires GOOGLE_API_KEY or ADC):\n"
+                  "    gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash"
+              ))
+@click.option("--context", default="", envvar="ASSESSMENT_CONTEXT",
+              help="Free-text description of the environment (e.g. 'Production fintech, PCI DSS scope'). "
+                   "Used to sharpen AI analysis. Also reads ASSESSMENT_CONTEXT env var.")
 @click.option("--output-dir", default="./output", show_default=True,
               help="Directory for report output")
 @click.option("--output-s3", default="", envvar="OUTPUT_S3_BUCKET",
@@ -94,7 +105,7 @@ def _setup_logging(verbose: bool):
               help="S3 key prefix for uploaded reports")
 @click.option("--verbose", is_flag=True, help="Verbose logging")
 def main(provider, mode, target, region, all_regions, profile, project, modules, skip,
-         no_ai, severity, model, output_dir, output_s3, output_s3_prefix, verbose):
+         no_ai, severity, model, context, output_dir, output_s3, output_s3_prefix, verbose):
     """StratusAI — AI-powered cloud security assessment tool."""
 
     _setup_logging(verbose)
@@ -106,16 +117,28 @@ def main(provider, mode, target, region, all_regions, profile, project, modules,
         log.error("External scanning works for any provider: --mode external --target <host>")
         sys.exit(1)
 
-    # ── Resolve Anthropic API key (env var or SSM) ────────────────────────────
+    # ── Resolve API key for the selected model's provider ────────────────────
     if not no_ai:
-        api_key = _resolve_anthropic_key()
-        if api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
-        else:
-            log.error("ANTHROPIC_API_KEY is not set. Use --no-ai to skip AI analysis.")
-            log.error("  export ANTHROPIC_API_KEY=sk-ant-...")
-            log.error("  Or set ANTHROPIC_API_KEY_SSM to an SSM parameter name.")
-            sys.exit(1)
+        from assessment.ai.llm_client import detect_provider
+        ai_provider = detect_provider(model)
+
+        if ai_provider == "anthropic":
+            api_key = _resolve_anthropic_key()
+            if api_key:
+                os.environ["ANTHROPIC_API_KEY"] = api_key
+            else:
+                log.error("ANTHROPIC_API_KEY is not set. Use --no-ai to skip AI analysis.")
+                log.error("  export ANTHROPIC_API_KEY=sk-ant-...")
+                log.error("  Or set ANTHROPIC_API_KEY_SSM to an SSM parameter name.")
+                sys.exit(1)
+        elif ai_provider == "openai":
+            if not os.environ.get("OPENAI_API_KEY"):
+                log.error("OPENAI_API_KEY is not set. Use --no-ai to skip AI analysis.")
+                log.error("  export OPENAI_API_KEY=sk-...")
+                sys.exit(1)
+        elif ai_provider == "gemini":
+            if not os.environ.get("GOOGLE_API_KEY") and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                log.warning("GOOGLE_API_KEY not set — will attempt Application Default Credentials.")
 
     # ── Resolve regions ──────────────────────────────────────────────────────
     if all_regions:
@@ -233,9 +256,10 @@ def main(provider, mode, target, region, all_regions, profile, project, modules,
             region=", ".join(regions),
             mode=mode,
             model=model,
+            account_context=context,
         )
         log.info("  Running synthesis...")
-        synthesis, synth_usage = synthesize(module_results, model=model)
+        synthesis, synth_usage = synthesize(module_results, model=model, account_context=context)
     except InsufficientCreditsError as e:
         log.error(f"\n{e}")
         log.error("Use --no-ai to run without AI analysis.")
