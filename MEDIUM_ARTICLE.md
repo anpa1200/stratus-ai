@@ -4,6 +4,42 @@
 
 ---
 
+## Table of Contents
+
+1. [The Problem Every Cloud Team Faces](#the-problem-every-cloud-team-faces)
+2. [What StratusAI Does](#what-stratusai-does)
+3. [Architecture Overview](#architecture-overview)
+4. [Project Structure](#project-structure)
+5. [Core Data Models](#core-data-models)
+6. [The Scanner Layer](#the-scanner-layer)
+   - [IAM Scanner: The Most Important One](#iam-scanner-the-most-important-one)
+   - [S3 Scanner: The Breach Surface](#s3-scanner-the-breach-surface)
+   - [Lambda Scanner: The Hidden Attack Surface](#lambda-scanner-the-hidden-attack-surface)
+   - [EKS Scanner: The Kubernetes Layer](#eks-scanner-the-kubernetes-layer)
+7. [The AI Layer: Where the Magic Happens](#the-ai-layer-where-the-magic-happens)
+   - [Preprocessing: Don't Send Everything to Claude](#preprocessing-dont-send-everything-to-claude)
+   - [The Two-Stage AI Pipeline](#the-two-stage-ai-pipeline)
+   - [The System Prompt: Making Claude a Security Expert](#the-system-prompt-making-claude-a-security-expert)
+8. [The Report Layer](#the-report-layer)
+   - [HTML Report with Live Search](#html-report-with-live-search)
+   - [Markdown Report](#markdown-report)
+9. [Testing Strategy: 125 Tests, Zero AWS Calls](#testing-strategy-125-tests-zero-aws-calls)
+   - [Using moto for AWS Mocking](#using-moto-for-aws-mocking)
+   - [Testing Report Generators Without AWS](#testing-report-generators-without-aws)
+   - [Test Coverage](#test-coverage)
+10. [Deployment: AWS ECS on Fargate](#deployment-aws-ecs-on-fargate)
+    - [Terraform Setup](#terraform-setup)
+    - [Deploying a New Image](#deploying-a-new-image)
+    - [Running On-Demand](#running-on-demand-from-aws-console-or-cli)
+11. [Running Locally](#running-locally)
+12. [Lessons Learned](#lessons-learned)
+13. [Cost and Performance](#cost-and-performance)
+14. [What's Next](#whats-next)
+15. [Full Quick-Start Reference](#full-quick-start-reference)
+16. [Conclusion](#conclusion)
+
+---
+
 ## The Problem Every Cloud Team Faces
 
 Your AWS account has been running for two years. You have 47 IAM users, 30+ S3 buckets, EC2 instances in multiple regions, Lambda functions, RDS databases, and a Kubernetes cluster. You *know* there are misconfigurations. You just don't know which ones are actively dangerous versus which are theoretical.
@@ -31,11 +67,12 @@ stratus --provider aws --mode both --target your-domain.com
 StratusAI will:
 
 1. **Run 9 internal AWS scanner modules**: IAM, S3, EC2, CloudTrail, RDS, Lambda, KMS, Secrets Manager, EKS
-2. **Run 4 external scan modules**: port scan (nmap), SSL/TLS analysis, HTTP security headers, DNS/email security (DMARC, SPF, DKIM)
-3. **Send each module's raw data to Claude AI** for per-module security analysis
-4. **Synthesize everything cross-module** to identify attack chains (e.g., "public S3 bucket + IMDSv1 EC2 + overprivileged IAM role = credential theft path")
-5. **Generate HTML and Markdown reports** with severity filtering, live search, and executive summary
-6. **Optionally deploy to AWS ECS** and run on a schedule via EventBridge Scheduler
+2. **Run 7 internal GCP scanner modules**: IAM, Compute, Storage, Cloud Functions, Cloud Run, Secret Manager, Logging
+3. **Run 4 external scan modules**: port scan (nmap), SSL/TLS analysis, HTTP security headers, DNS/email security (DMARC, SPF, DKIM)
+4. **Send each module's raw data to an LLM of your choice** — Claude (Anthropic), GPT-4o/o1/o3 (OpenAI), or Gemini (Google)
+5. **Synthesize everything cross-module** to identify attack chains (e.g., "public S3 bucket + IMDSv1 EC2 + overprivileged IAM role = credential theft path")
+6. **Generate HTML and Markdown reports** with severity filtering, live search, and executive summary
+7. **Optionally deploy to AWS ECS** and run on a schedule via EventBridge Scheduler
 
 The result: an interactive HTML report you can share with your CISO, showing exactly which resources are at risk, what an attacker could do, and the specific CLI commands to fix it.
 
@@ -51,22 +88,22 @@ The result: an interactive HTML report you can share with your CISO, showing exa
 │  │   Scanners   │    │  AI Layer    │    │    Reports       │  │
 │  │              │    │              │    │                  │  │
 │  │  AWS (9)     │───►│  Preprocessor│───►│  HTML (rich UI)  │  │
-│  │  External(4) │    │  Per-module  │    │  Markdown        │  │
-│  │              │    │  Synthesis   │    │  S3 upload       │  │
+│  │  GCP (7)     │    │  Per-module  │    │  Markdown        │  │
+│  │  External(4) │    │  Synthesis   │    │  S3 upload       │  │
 │  └──────────────┘    └──────────────┘    └──────────────────┘  │
 │         │                   │                                   │
 │         ▼                   ▼                                   │
-│  ┌──────────────┐    ┌──────────────┐                           │
-│  │  ModuleResult│    │  Claude API  │                           │
-│  │  (raw_output,│    │  (Sonnet 4.6)│                           │
-│  │   findings,  │    │              │                           │
-│  │   tokens)    │    └──────────────┘                           │
-│  └──────────────┘                                               │
+│  ┌──────────────┐    ┌──────────────────────────┐               │
+│  │  ModuleResult│    │  LLM Router (llm_client) │               │
+│  │  (raw_output,│    │  claude-* → Anthropic    │               │
+│  │   findings,  │    │  gpt-*/o*  → OpenAI      │               │
+│  │   tokens)    │    │  gemini-*  → Google      │               │
+│  └──────────────┘    └──────────────────────────┘               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 Two-stage AI pipeline:
-- **Stage 1** — Each module is analyzed independently. Claude returns structured JSON: findings (with severity, evidence, remediation), risk score, and module summary.
+- **Stage 1** — Each module is analyzed independently. The LLM returns structured JSON: findings (with severity, evidence, remediation), risk score, and module summary. Low-signal modules (DNS, SSL, KMS) are automatically downgraded to a cheaper model in the same provider family to cut costs.
 - **Stage 2** — A synthesis pass takes all module summaries and findings, identifies attack chains, produces a top-10 priority list, executive summary, and overall risk rating.
 
 ---
@@ -926,6 +963,17 @@ stratus --provider aws --no-ai
 # Filter to HIGH+ findings only
 stratus --provider aws --severity HIGH
 
+# Add environment context to sharpen AI analysis
+stratus --provider aws --context "Production fintech, PCI DSS scope, handles cardholder data"
+
+# Use a different LLM provider
+stratus --provider aws --model gpt-4o         # OpenAI (requires OPENAI_API_KEY)
+stratus --provider aws --model gemini-2.0-flash  # Google (requires GOOGLE_API_KEY)
+stratus --provider aws --model o3-mini        # OpenAI reasoning model
+
+# GCP internal scan
+stratus --provider gcp --mode internal --project my-gcp-project
+
 # Upload reports to S3
 stratus --provider aws --output-s3 my-security-reports-bucket
 ```
@@ -1020,13 +1068,13 @@ No traditional scanner produces output like this.
 
 ### Typical Run Costs
 
-| Account Size | Modules | Approx. Tokens | Approx. Cost |
-|---|---|---|---|
-| Small (10 users, 5 buckets) | All 9 | ~20K in / 5K out | $0.02 |
-| Medium (50 users, 20 buckets, 100 Lambda) | All 9 | ~55K in / 12K out | $0.06 |
-| Large (200+ users, many services) | All 9 | ~120K in / 25K out | $0.15 |
+| Account Size | Approx. Tokens | claude-sonnet-4-6 | gpt-4o | gemini-2.0-flash |
+|---|---|---|---|---|
+| Small (10 users, 5 buckets) | ~20K in / 5K out | $0.02 | $0.02 | $0.004 |
+| Medium (50 users, 20 buckets, 100 Lambda) | ~55K in / 12K out | $0.06 | $0.06 | $0.01 |
+| Large (200+ users, many services) | ~120K in / 25K out | $0.15 | $0.12 | $0.02 |
 
-With `claude-sonnet-4-6` pricing ($3/MTok input, $15/MTok output). Haiku would be ~10x cheaper; Opus ~5x more expensive.
+The tiered model feature further reduces costs: simple modules (DNS, SSL, KMS, Secrets Manager) are automatically routed to cheaper models — Haiku, gpt-4o-mini, or gemini-flash — saving 30-50% on typical runs without any loss of finding quality.
 
 ### Performance
 
@@ -1041,9 +1089,15 @@ Total: 2-4 minutes for a full assessment.
 
 ## What's Next
 
-Features I'm planning or already designing:
+Shipped since the initial release:
+- **GCP support** — 7 scanner modules (IAM, Compute, Storage, Cloud Functions, Cloud Run, Secret Manager, Logging)
+- **Multi-LLM support** — Claude (Anthropic), GPT-4o/o1/o3/o4-mini (OpenAI), Gemini 2.0/1.5 (Google)
+- **Tiered model selection** — low-signal modules auto-downgrade to cheaper models (Haiku, gpt-4o-mini, gemini-flash)
+- **`--context` flag** — free-text environment description that sharpens AI severity ratings
 
-1. **GCP and Azure support** — The architecture supports multiple providers; it just needs scanner implementations
+Features in progress:
+
+1. **Azure support** — The architecture supports multiple providers; scanner modules are next
 2. **Drift detection** — Compare two reports and highlight what changed (new public bucket, new IAM user without MFA)
 3. **Remediation automation** — For select finding types, offer `--auto-fix` mode that applies the remediation command
 4. **GitHub Actions integration** — Run on every Terraform plan/apply to catch misconfigs before they land
@@ -1088,15 +1142,16 @@ terraform init && terraform apply
 
 ## Conclusion
 
-StratusAI demonstrates what's possible when you combine traditional infrastructure scanning (boto3 API calls) with AI analysis (Claude). The individual pieces aren't new: IAM scanning, S3 bucket analysis, nmap port scanning — these have existed for years in tools like ScoutSuite, Prowler, and Steampipe.
+StratusAI demonstrates what's possible when you combine traditional infrastructure scanning with AI analysis. The individual pieces aren't new: IAM scanning, S3 bucket analysis, nmap port scanning — these have existed for years in tools like ScoutSuite, Prowler, and Steampipe.
 
 The difference is the AI layer:
-- **Context-aware analysis**: Claude understands that "Lambda with SSRF risk + EC2 with IMDSv1 + overprivileged IAM role" is a specific attack path, not three unrelated findings
+- **Context-aware analysis**: The LLM understands that "Lambda with SSRF risk + EC2 with IMDSv1 + overprivileged IAM role" is a specific attack path, not three unrelated findings
 - **Intelligent prioritization**: Instead of sorting 400 findings by severity, get a top-10 list ranked by actual exploitability on *your* specific account
 - **Human-readable output**: Executive summaries that explain what an attacker could *actually do*, not just that "bucket versioning is disabled"
 - **Specific remediation**: Not "enable encryption" but `aws s3api put-bucket-encryption --bucket prod-uploads --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithmName":"aws:kms"}}]}'`
+- **Provider and model flexibility**: Scan AWS or GCP; analyze with Claude, GPT-4o, or Gemini — switch with a single `--model` flag
 
-The tool runs locally in 5 minutes, deploys to AWS ECS for automated weekly runs, costs under $0.15 per assessment, and produces reports your CISO will actually read.
+The tool runs locally in 5 minutes, deploys to AWS ECS for automated weekly runs, costs under $0.15 per assessment (or under $0.02 with Gemini), and produces reports your CISO will actually read.
 
 All code is in the repository. The 125-test suite means you can modify anything with confidence.
 
