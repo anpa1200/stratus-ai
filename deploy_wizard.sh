@@ -38,18 +38,23 @@ ask_secret() {
 # Prints numbered options then reads a choice; returns the number chosen.
 ask_choice() {
   local prompt="$1" default="$2"; shift 2
-  local i=1
-  for opt in "$@"; do
-    if [[ "$i" == "$default" ]]; then
-      echo -e "    ${GREEN}${i}) ${opt}${RESET}"
-    else
-      echo -e "    ${i}) ${opt}"
-    fi
+  local opts=("$@") total="${#@}" i=1
+  echo -e "  ${BOLD}${prompt}${RESET}"
+  for opt in "${opts[@]}"; do
+    echo -e "    ${CYAN}${i})${RESET}  ${opt}"
     ((i++))
   done
-  echo -en "  ${BOLD}${prompt} [${default}]: ${RESET}"
-  read -r reply
-  echo "${reply:-$default}"
+  local reply
+  while true; do
+    echo -en "  Enter 1-${total} ${BOLD}[${default}]${RESET}: "
+    read -r reply
+    reply="${reply:-$default}"
+    if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= total )); then
+      break
+    fi
+    echo -e "  ${RED}Please enter a number between 1 and ${total}.${RESET}"
+  done
+  echo "$reply"
 }
 
 confirm() {
