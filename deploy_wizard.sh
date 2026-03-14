@@ -603,13 +603,11 @@ echo
 info "Initializing Terraform..."
 terraform -chdir=./terraform/gcp init -upgrade -input=false
 
-echo
-info "Planning..."
-terraform -chdir=./terraform/gcp plan -input=false -out=/tmp/stratusai-gcp.tfplan
-
 # ── Phase 1: Enable APIs + create Artifact Registry only ─────────────────────
 # Cloud Run Job creation requires the image to already exist in the registry.
 # So we create the registry first, push the image, then apply everything else.
+# Note: we do NOT use a saved plan here — Phase 1 changes state, which would
+# make any pre-generated plan stale before Phase 2 runs.
 echo
 info "Phase 1/2 — Enabling APIs and creating Artifact Registry..."
 terraform -chdir=./terraform/gcp apply -input=false -auto-approve \
@@ -638,7 +636,7 @@ ok "Image pushed: ${IMAGE_PATH}"
 # ── Phase 2: Apply remaining infrastructure (Cloud Run Job, IAM, GCS, etc.) ──
 echo
 info "Phase 2/2 — Deploying remaining infrastructure..."
-terraform -chdir=./terraform/gcp apply -input=false /tmp/stratusai-gcp.tfplan
+terraform -chdir=./terraform/gcp apply -input=false -auto-approve
 ok "Infrastructure deployed."
 
 # ── Get outputs ───────────────────────────────────────────────────────────────
