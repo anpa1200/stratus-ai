@@ -477,9 +477,31 @@ echo -e "${NC}"
 ok "Reports saved to: ${ABS_OUTPUT}/"
 echo ""
 
+# List all generated report files
+shopt -s nullglob
+REPORT_FILES=("${ABS_OUTPUT}"/*.html "${ABS_OUTPUT}"/*.md "${ABS_OUTPUT}"/*.json)
+shopt -u nullglob
+
+if [[ "${#REPORT_FILES[@]}" -gt 0 ]]; then
+  echo -e "  ${BOLD}Generated reports:${NC}"
+  for f in "${REPORT_FILES[@]}"; do
+    fname="$(basename "$f")"
+    case "$f" in
+      *.html) icon="🌐" ;;
+      *.md)   icon="📄" ;;
+      *.json) icon="📋" ;;
+      *)      icon="📁" ;;
+    esac
+    echo -e "    ${icon}  ${CYAN}file://${f}${NC}"
+  done
+  echo ""
+fi
+
 HTML_REPORT=$(find "${ABS_OUTPUT}" -name "*.html" 2>/dev/null | sort | tail -1 || true)
 if [[ -n "${HTML_REPORT:-}" ]]; then
-  ok "HTML report: ${HTML_REPORT}"
+  echo -e "  ${BOLD}Open in browser:${NC}"
+  echo -e "    ${GREEN}file://${HTML_REPORT}${NC}"
+  echo ""
   command -v xdg-open &>/dev/null && xdg-open "$HTML_REPORT" &>/dev/null & true
   command -v open      &>/dev/null && open      "$HTML_REPORT" &>/dev/null & true
 fi
