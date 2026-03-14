@@ -714,6 +714,14 @@ echo -e "\n  ${BOLD}Cleanup${RESET}\n"
 if confirm "Destroy all GCP infrastructure now? (Cloud Run, Artifact Registry, GCS, Secret Manager — cannot be undone)"; then
   echo
   warn "Destroying all StratusAI GCP infrastructure..."
+
+  # Empty the reports bucket first so Terraform can delete it
+  BUCKET_NAME="${GCP_PROJECT}-${NAME_PREFIX}-reports"
+  if gsutil ls "gs://${BUCKET_NAME}" &>/dev/null; then
+    info "Emptying gs://${BUCKET_NAME} before destroy..."
+    gsutil -m rm -r "gs://${BUCKET_NAME}/**" 2>/dev/null || true
+  fi
+
   terraform -chdir=./terraform/gcp destroy -auto-approve
   ok "Infrastructure destroyed."
 

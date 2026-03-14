@@ -98,7 +98,7 @@ resource "google_artifact_registry_repository" "images" {
 resource "google_storage_bucket" "reports" {
   name          = "${var.gcp_project}-${var.name_prefix}-reports"
   location      = var.gcp_region
-  force_destroy = false
+  force_destroy = true
 
   uniform_bucket_level_access = true
 
