@@ -213,11 +213,36 @@ if [[ "$MODE" != "external" ]]; then
     fi
 
     DETECTED_PROJECT=$(gcloud config get-value project 2>/dev/null || echo "")
-    ask GCP_PROJECT "GCP project ID" "$DETECTED_PROJECT"
-    while [[ -z "$GCP_PROJECT" ]]; do
-      err "GCP project ID is required."
-      ask GCP_PROJECT "GCP project ID" ""
-    done
+
+    info "Fetching accessible GCP projects..."
+    GCP_PROJ_IDS=(); GCP_PROJ_LABELS=()
+    while IFS=$'\t' read -r pid pname; do
+      [[ -z "$pid" ]] && continue
+      GCP_PROJ_IDS+=("$pid")
+      GCP_PROJ_LABELS+=("${pid}  —  ${pname}")
+    done < <(gcloud projects list --format="value(projectId,name)" 2>/dev/null | sort)
+
+    if [[ "${#GCP_PROJ_IDS[@]}" -gt 0 ]]; then
+      GCP_PROJ_LABELS+=("Enter project ID manually")
+      ask_choice GCP_PROJ_N "Select GCP project to scan:" "${GCP_PROJ_LABELS[@]}"
+      if (( GCP_PROJ_N <= ${#GCP_PROJ_IDS[@]} )); then
+        GCP_PROJECT="${GCP_PROJ_IDS[$((GCP_PROJ_N - 1))]}"
+        ok "Selected: ${GCP_PROJECT}"
+      else
+        ask GCP_PROJECT "GCP project ID" "$DETECTED_PROJECT"
+        while [[ -z "$GCP_PROJECT" ]]; do
+          err "GCP project ID is required."
+          ask GCP_PROJECT "GCP project ID" ""
+        done
+      fi
+    else
+      warn "Could not list projects — enter project ID manually."
+      ask GCP_PROJECT "GCP project ID" "$DETECTED_PROJECT"
+      while [[ -z "$GCP_PROJECT" ]]; do
+        err "GCP project ID is required."
+        ask GCP_PROJECT "GCP project ID" ""
+      done
+    fi
     ask GCP_REGION "GCP region" "us-central1"
     ok "Project: ${GCP_PROJECT} (${GCP_REGION})"
   fi

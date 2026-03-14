@@ -1084,12 +1084,24 @@ AWS profile [default]:
 AWS region  [us-east-1]:
 ```
 
-For GCP it checks whether Application Default Credentials exist at `~/.config/gcloud/application_default_credentials.json` and prompts for a project ID:
+For GCP it checks Application Default Credentials and then **lists all accessible projects on your account** so you can pick by number — no need to remember or type a project ID:
 
 ```
-GCP project ID: my-project-123
-✓  ADC found at ~/.config/gcloud/application_default_credentials.json
+▸ GCP Application Default Credentials found
+▸ Fetching accessible GCP projects...
+
+  Select GCP project to scan:
+    1)  my-prod-project-123  —  Production App
+    2)  my-staging-4567      —  Staging Environment
+    3)  data-pipeline-9999   —  Data Platform
+    4)  Enter project ID manually
+
+  Enter 1-4 [1]: 2
+✓ Selected: my-staging-4567
+GCP region [us-central1]:
 ```
+
+If `gcloud` can't list projects (e.g. missing permissions), it falls back to a plain text prompt.
 
 **Step 5 — AI model**
 
@@ -1250,6 +1262,8 @@ Shipped since the initial release:
 - **Multi-LLM support** — Claude (Anthropic), GPT-4o/o1/o3/o4-mini (OpenAI), Gemini 2.0/1.5 (Google)
 - **Tiered model selection** — low-signal modules auto-downgrade to cheaper models (Haiku, gpt-4o-mini, gemini-flash)
 - **`--context` flag** — free-text environment description that sharpens AI severity ratings
+- **`deploy_wizard.sh`** — interactive deployment wizard for AWS (ECS Fargate) and GCP (Cloud Run Job); handles auth, Artifact Registry setup, Secret Manager, and optional Cloud Scheduler in one flow
+- **Numbered project selection** — `wizard.sh` and `deploy_wizard.sh` now list all accessible GCP projects on your account so you can pick by number instead of typing a project ID
 
 Features in progress:
 

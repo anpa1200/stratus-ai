@@ -418,12 +418,32 @@ fi
 # ── GCP Step 3: Project & region ─────────────────────────────────────────────
 section "3 — Project & region"
 
-echo -e "  Available projects:"
-gcloud projects list --format="table(projectId,name)" 2>/dev/null | head -15 || \
-  info "(could not list projects)"
-echo
+info "Fetching accessible GCP projects..."
+PROJ_IDS=(); PROJ_LABELS=()
+while IFS=$'\t' read -r pid pname; do
+  [[ -z "$pid" ]] && continue
+  PROJ_IDS+=("$pid")
+  PROJ_LABELS+=("${pid}  —  ${pname}")
+done < <(gcloud projects list --format="value(projectId,name)" 2>/dev/null | sort)
 
-GCP_PROJECT=$(ask "GCP project ID to deploy INTO")
+if [[ "${#PROJ_IDS[@]}" -gt 0 ]]; then
+  PROJ_LABELS+=("Enter project ID manually")
+  PROJ_CHOICE=$(ask_choice "GCP project to deploy INTO" "1" "${PROJ_LABELS[@]}")
+  if (( PROJ_CHOICE <= ${#PROJ_IDS[@]} )); then
+    GCP_PROJECT="${PROJ_IDS[$((PROJ_CHOICE - 1))]}"
+    ok "Selected: ${GCP_PROJECT}"
+  else
+    GCP_PROJECT=$(ask "GCP project ID to deploy INTO")
+    while [[ -z "$GCP_PROJECT" ]]; do
+      err "Project ID is required."
+      GCP_PROJECT=$(ask "GCP project ID to deploy INTO")
+    done
+  fi
+else
+  warn "Could not list projects — enter project ID manually."
+  GCP_PROJECT=$(ask "GCP project ID to deploy INTO")
+fi
+
 GCP_REGION=$(ask  "GCP region" "us-central1")
 NAME_PREFIX=$(ask "Resource name prefix" "stratusai")
 ENVIRONMENT=$(ask "Environment label (prod / staging)" "prod")
@@ -449,11 +469,17 @@ SCAN_PROJECT_CHOICE=$(ask_choice "Scan target" "1" \
 SCAN_PROJECT=""
 if [[ "$SCAN_PROJECT_CHOICE" == "2" ]]; then
   echo
-  echo -e "  Your projects:"
-  gcloud projects list --format="value(projectId)" 2>/dev/null | \
-    while read -r p; do echo "    • $p"; done || true
-  echo
-  SCAN_PROJECT=$(ask "Project ID to scan")
+  if [[ "${#PROJ_IDS[@]}" -gt 0 ]]; then
+    SCAN_CHOICE=$(ask_choice "Project to scan" "1" "${PROJ_LABELS[@]}")
+    if (( SCAN_CHOICE <= ${#PROJ_IDS[@]} )); then
+      SCAN_PROJECT="${PROJ_IDS[$((SCAN_CHOICE - 1))]}"
+      ok "Scan target: ${SCAN_PROJECT}"
+    else
+      SCAN_PROJECT=$(ask "Project ID to scan")
+    fi
+  else
+    SCAN_PROJECT=$(ask "Project ID to scan")
+  fi
 fi
 
 # ── GCP Step 5: AI ────────────────────────────────────────────────────────────
