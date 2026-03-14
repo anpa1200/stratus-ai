@@ -23,36 +23,38 @@ ask() {
   local prompt="$1" default="${2:-}"
   local display_default=""
   [[ -n "$default" ]] && display_default=" [${default}]"
-  echo -en "  ${BOLD}${prompt}${display_default}: ${RESET}"
+  echo -en "  ${BOLD}${prompt}${display_default}: ${RESET}" >&2
   read -r reply
   echo "${reply:-$default}"
 }
 
 ask_secret() {
   local prompt="$1"
-  echo -en "  ${BOLD}${prompt} (hidden): ${RESET}"
-  read -rs reply; echo
+  echo -en "  ${BOLD}${prompt} (hidden): ${RESET}" >&2
+  read -rs reply
+  echo >&2
   echo "$reply"
 }
 
 # Prints numbered options then reads a choice; returns the number chosen.
+# All display goes to stderr so $(...) capture works correctly.
 ask_choice() {
   local prompt="$1" default="$2"; shift 2
   local opts=("$@") total="${#@}" i=1
-  echo -e "  ${BOLD}${prompt}${RESET}"
+  echo -e "  ${BOLD}${prompt}${RESET}" >&2
   for opt in "${opts[@]}"; do
-    echo -e "    ${CYAN}${i})${RESET}  ${opt}"
+    echo -e "    ${CYAN}${i})${RESET}  ${opt}" >&2
     ((i++))
   done
   local reply
   while true; do
-    echo -en "  Enter 1-${total} ${BOLD}[${default}]${RESET}: "
+    echo -en "  Enter 1-${total} ${BOLD}[${default}]${RESET}: " >&2
     read -r reply
     reply="${reply:-$default}"
     if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= total )); then
       break
     fi
-    echo -e "  ${RED}Please enter a number between 1 and ${total}.${RESET}"
+    echo -e "  ${RED}Please enter a number between 1 and ${total}.${RESET}" >&2
   done
   echo "$reply"
 }
