@@ -1,6 +1,6 @@
-# StratusAI: I Built an AI-Powered Cloud Security Scanner That Runs on AWS — Here's Everything
+# StratusAI: I Built an AI-Powered Cloud Security Scanner for AWS and GCP — Here's Everything
 
-*A complete engineering walkthrough of building, testing, and deploying an intelligent cloud security assessment tool using Python, Claude AI, and Terraform*
+*A complete engineering walkthrough of building, testing, and deploying an intelligent multi-cloud security assessment tool using Python, Claude AI, and Terraform*
 
 ---
 
@@ -11,49 +11,59 @@
 3. [Architecture Overview](#architecture-overview)
 4. [Project Structure](#project-structure)
 5. [Core Data Models](#core-data-models)
-6. [The Scanner Layer](#the-scanner-layer)
+6. [The AWS Scanner Layer](#the-aws-scanner-layer)
    - [IAM Scanner: The Most Important One](#iam-scanner-the-most-important-one)
    - [S3 Scanner: The Breach Surface](#s3-scanner-the-breach-surface)
    - [Lambda Scanner: The Hidden Attack Surface](#lambda-scanner-the-hidden-attack-surface)
    - [EKS Scanner: The Kubernetes Layer](#eks-scanner-the-kubernetes-layer)
-7. [The AI Layer: Where the Magic Happens](#the-ai-layer-where-the-magic-happens)
+7. [The GCP Scanner Layer](#the-gcp-scanner-layer)
+   - [GCP IAM Scanner](#gcp-iam-scanner)
+   - [GCP Compute Scanner](#gcp-compute-scanner)
+   - [GCP Storage Scanner](#gcp-storage-scanner)
+   - [GCP Secret Manager & Logging Scanners](#gcp-secret-manager--logging-scanners)
+8. [The AI Layer: Where the Magic Happens](#the-ai-layer-where-the-magic-happens)
    - [Preprocessing: Don't Send Everything to Claude](#preprocessing-dont-send-everything-to-claude)
    - [The Two-Stage AI Pipeline](#the-two-stage-ai-pipeline)
    - [The System Prompt: Making Claude a Security Expert](#the-system-prompt-making-claude-a-security-expert)
-8. [The Report Layer](#the-report-layer)
+9. [The Report Layer](#the-report-layer)
    - [HTML Report with Live Search](#html-report-with-live-search)
    - [Markdown Report](#markdown-report)
-9. [Testing Strategy: 125 Tests, Zero AWS Calls](#testing-strategy-125-tests-zero-aws-calls)
-   - [Using moto for AWS Mocking](#using-moto-for-aws-mocking)
-   - [Testing Report Generators Without AWS](#testing-report-generators-without-aws)
-   - [Test Coverage](#test-coverage)
-10. [Deployment: AWS ECS on Fargate](#deployment-aws-ecs-on-fargate)
+10. [Testing Strategy: 125 Tests, Zero Cloud Calls](#testing-strategy-125-tests-zero-cloud-calls)
+    - [Using moto for AWS Mocking](#using-moto-for-aws-mocking)
+    - [Testing Report Generators Without AWS](#testing-report-generators-without-aws)
+    - [Test Coverage](#test-coverage)
+11. [Deployment: AWS ECS on Fargate](#deployment-aws-ecs-on-fargate)
     - [Terraform Setup](#terraform-setup)
     - [Deploying a New Image](#deploying-a-new-image)
     - [Running On-Demand](#running-on-demand-from-aws-console-or-cli)
-11. [Running Locally](#running-locally)
-12. [Quick Start with the Wizard](#quick-start-with-the-wizard)
-13. [Lessons Learned](#lessons-learned)
-14. [Cost and Performance](#cost-and-performance)
-15. [What's Next](#whats-next)
-16. [Full Quick-Start Reference](#full-quick-start-reference)
-17. [Conclusion](#conclusion)
+12. [Deployment: GCP Cloud Run Job](#deployment-gcp-cloud-run-job)
+    - [Architecture](#gcp-architecture)
+    - [Terraform Setup](#gcp-terraform-setup)
+    - [Two-Phase Deploy with the Wizard](#two-phase-deploy-with-the-wizard)
+    - [Running On-Demand](#running-gcp-scans-on-demand)
+13. [Running Locally](#running-locally)
+14. [Quick Start with the Wizard](#quick-start-with-the-wizard)
+15. [Lessons Learned](#lessons-learned)
+16. [Cost and Performance](#cost-and-performance)
+17. [What's Next](#whats-next)
+18. [Full Quick-Start Reference](#full-quick-start-reference)
+19. [Conclusion](#conclusion)
 
 ---
 
 ## The Problem Every Cloud Team Faces
 
-Your AWS account has been running for two years. You have 47 IAM users, 30+ S3 buckets, EC2 instances in multiple regions, Lambda functions, RDS databases, and a Kubernetes cluster. You *know* there are misconfigurations. You just don't know which ones are actively dangerous versus which are theoretical.
+Your cloud environment has been running for two years. You have 47 IAM users, 30+ S3 buckets, GCP service accounts with overly broad roles, EC2 instances in multiple regions, Cloud Run services, Lambda functions, and a Kubernetes cluster. You *know* there are misconfigurations. You just don't know which ones are actively dangerous versus which are theoretical.
 
-Traditional security tools give you 800 raw findings and a risk score. They tell you "S3 bucket `logs-2021-archive` has versioning disabled." Great. Is that a P0 incident or a Tuesday afternoon task?
+Traditional security tools give you 800 raw findings and a risk score. They tell you "S3 bucket `logs-2021-archive` has versioning disabled" or "GCP service account has project-level Owner role." Great. Is that a P0 incident or a Tuesday afternoon task?
 
 What you actually need is something that:
-1. **Scans everything** across your AWS environment
-2. **Understands context** — an unencrypted S3 bucket holding Lambda code *plus* an EC2 instance with IMDSv1 enabled *plus* an overprivileged IAM role is an attack chain, not three separate findings
+1. **Scans everything** across your AWS and GCP environments
+2. **Understands context** — an unencrypted S3 bucket holding Lambda code *plus* an EC2 instance with IMDSv1 enabled *plus* an overprivileged IAM role is an attack chain, not three separate findings; same logic applies to GCP service account misconfigurations
 3. **Prioritizes ruthlessly** — which 5 things should you fix before you close your laptop tonight?
 4. **Explains in plain English** what an attacker could actually do
 
-That's what I built: **StratusAI**, an open-source cloud security assessment tool that combines traditional boto3-based AWS scanning with Claude AI for intelligent analysis and synthesis. This article is a complete engineering guide — architecture, code, testing, and deployment included.
+That's what I built: **StratusAI**, an open-source multi-cloud security assessment tool that combines traditional cloud API scanning (AWS via boto3, GCP via google-cloud SDK) with Claude AI for intelligent analysis and synthesis. This article is a complete engineering guide — architecture, code, testing, and deployment on both clouds included.
 
 ---
 
@@ -62,18 +72,22 @@ That's what I built: **StratusAI**, an open-source cloud security assessment too
 In a single CLI command:
 
 ```bash
+# Scan AWS account
 stratus --provider aws --mode both --target your-domain.com
+
+# Scan GCP project
+stratus --provider gcp --mode internal --project my-gcp-project
 ```
 
 StratusAI will:
 
 1. **Run 9 internal AWS scanner modules**: IAM, S3, EC2, CloudTrail, RDS, Lambda, KMS, Secrets Manager, EKS
-2. **Run 7 internal GCP scanner modules**: IAM, Compute, Storage, Cloud Functions, Cloud Run, Secret Manager, Logging
-3. **Run 4 external scan modules**: port scan (nmap), SSL/TLS analysis, HTTP security headers, DNS/email security (DMARC, SPF, DKIM)
+2. **Run 7 internal GCP scanner modules**: IAM, Compute Engine, Cloud Storage, Cloud Functions, Cloud Run, Secret Manager, Cloud Logging
+3. **Run 4 external scan modules** (cloud-agnostic): port scan (nmap), SSL/TLS analysis, HTTP security headers, DNS/email security (DMARC, SPF, DKIM)
 4. **Send each module's raw data to an LLM of your choice** — Claude (Anthropic), GPT-4o/o1/o3 (OpenAI), or Gemini (Google)
-5. **Synthesize everything cross-module** to identify attack chains (e.g., "public S3 bucket + IMDSv1 EC2 + overprivileged IAM role = credential theft path")
+5. **Synthesize everything cross-module** to identify attack chains (e.g., "public GCS bucket + overprivileged service account + metadata server access = credential theft path")
 6. **Generate HTML and Markdown reports** with severity filtering, live search, and executive summary
-7. **Optionally deploy to AWS ECS** and run on a schedule via EventBridge Scheduler
+7. **Deploy to AWS ECS** (Fargate) or **GCP Cloud Run Job** and run on a schedule via EventBridge or Cloud Scheduler
 
 The result: an interactive HTML report you can share with your CISO, showing exactly which resources are at risk, what an attacker could do, and the specific CLI commands to fix it.
 
@@ -82,29 +96,37 @@ The result: an interactive HTML report you can share with your CISO, showing exa
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         StratusAI                               │
-│                                                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │   Scanners   │    │  AI Layer    │    │    Reports       │  │
-│  │              │    │              │    │                  │  │
-│  │  AWS (9)     │───►│  Preprocessor│───►│  HTML (rich UI)  │  │
-│  │  GCP (7)     │    │  Per-module  │    │  Markdown        │  │
-│  │  External(4) │    │  Synthesis   │    │  S3 upload       │  │
-│  └──────────────┘    └──────────────┘    └──────────────────┘  │
-│         │                   │                                   │
-│         ▼                   ▼                                   │
-│  ┌──────────────┐    ┌──────────────────────────┐               │
-│  │  ModuleResult│    │  LLM Router (llm_client) │               │
-│  │  (raw_output,│    │  claude-* → Anthropic    │               │
-│  │   findings,  │    │  gpt-*/o*  → OpenAI      │               │
-│  │   tokens)    │    │  gemini-*  → Google      │               │
-│  └──────────────┘    └──────────────────────────┘               │
-└─────────────────────────────────────────────────────────────────┘
+                          ┌──────────────────────────────────────────┐
+                          │              StratusAI                   │
+                          │                                          │
+  AWS credentials ──────► │  ┌──────────┐   ┌───────────────────┐   │
+  GCP credentials ──────► │  │ Scanners │   │    AI Layer       │   │
+  (no creds needed) ────► │  │          │   │                   │   │
+                          │  │ AWS  (9) │──►│ Preprocessor      │   │
+                          │  │ GCP  (7) │   │ Per-module LLM    │──►│──► HTML report
+                          │  │ Ext. (4) │   │ Cross-module      │   │    Markdown
+                          │  └──────────┘   │ Synthesis         │   │    GCS/S3 upload
+                          │                 └───────────────────┘   │
+                          │  ┌─────────────────────────────────┐    │
+                          │  │  LLM Router                     │    │
+                          │  │  claude-*  → Anthropic API      │    │
+                          │  │  gpt-*/o*  → OpenAI API         │    │
+                          │  │  gemini-*  → Google AI API      │    │
+                          │  └─────────────────────────────────┘    │
+                          └──────────────────────────────────────────┘
+                                           │
+                    ┌──────────────────────┴───────────────────────┐
+                    │                                              │
+             AWS deployment                                GCP deployment
+          ECS Fargate + ECR + S3                Cloud Run Job + Artifact Registry
+          + SSM + EventBridge                   + GCS + Secret Manager
+                    │                           + Cloud Scheduler
+             ./deploy.sh                              │
+                                             ./deploy_wizard.sh
 ```
 
 Two-stage AI pipeline:
-- **Stage 1** — Each module is analyzed independently. The LLM returns structured JSON: findings (with severity, evidence, remediation), risk score, and module summary. Low-signal modules (DNS, SSL, KMS) are automatically downgraded to a cheaper model in the same provider family to cut costs.
+- **Stage 1** — Each module is analyzed independently. The LLM returns structured JSON: findings (with severity, evidence, remediation), risk score, and module summary. Low-signal modules (DNS, SSL, KMS, Cloud Logging) are automatically downgraded to a cheaper model in the same provider family to cut costs.
 - **Stage 2** — A synthesis pass takes all module summaries and findings, identifies attack chains, produces a top-10 priority list, executive summary, and overall risk rating.
 
 ---
@@ -114,12 +136,12 @@ Two-stage AI pipeline:
 ```
 cloud_audit/
 ├── assessment/
-│   ├── cli.py                    # Click CLI entrypoint
+│   ├── cli.py                    # Click CLI entrypoint (--provider aws|gcp, --project, ...)
 │   ├── config.py                 # Thresholds, sensitive ports, model pricing
 │   ├── models.py                 # Dataclasses: Finding, ModuleResult, Report, AttackChain
-│   ├── runner.py                 # Parallel scanner execution
+│   ├── runner.py                 # Parallel scanner execution (ThreadPoolExecutor)
 │   ├── ai/
-│   │   ├── client.py             # Claude API wrapper + cost estimation
+│   │   ├── client.py             # LLM router: Anthropic / OpenAI / Google APIs
 │   │   ├── analyzer.py           # Per-module analysis + synthesis orchestration
 │   │   ├── preprocessor.py       # Smart data reduction before sending to AI
 │   │   └── prompts.py            # System prompt, module prompt, synthesis prompt
@@ -135,6 +157,14 @@ cloud_audit/
 │   │   │   ├── kms.py            # CMKs, rotation, public key policies
 │   │   │   ├── secrets_manager.py # Rotation, KMS usage, public resource policies
 │   │   │   └── eks.py            # Clusters, API endpoint, logging, K8s version
+│   │   ├── gcp/
+│   │   │   ├── iam.py            # Service accounts, bindings, admin roles, key age
+│   │   │   ├── compute.py        # VMs, firewall rules, OS Login, serial port, metadata
+│   │   │   ├── storage.py        # Buckets, public ACLs, uniform access, encryption, logging
+│   │   │   ├── cloudfunctions.py # Functions, public ingress, unauthenticated access, runtime
+│   │   │   ├── cloudrun.py       # Services, public access, unauthenticated invocation
+│   │   │   ├── secretmanager.py  # Secret versions, rotation, IAM bindings
+│   │   │   └── logging.py        # Log sinks, audit log config, data access logs
 │   │   └── external/
 │   │       ├── port_scan.py      # nmap wrapper with XML parsing
 │   │       ├── ssl_scan.py       # SSL/TLS certificate and cipher analysis
@@ -145,13 +175,14 @@ cloud_audit/
 │       └── markdown.py           # Clean Markdown for git/docs
 ├── tests/
 │   ├── conftest.py
-│   ├── test_aws_scanners.py      # moto-based integration tests
+│   ├── test_aws_scanners.py      # moto-based AWS integration tests
+│   ├── test_gcp_scanners.py      # google-cloud mock-based GCP tests
 │   ├── test_preprocessor.py      # Unit tests for data reduction
 │   ├── test_reports.py           # Unit tests for HTML/Markdown generators
 │   ├── test_models.py            # Dataclass tests
 │   ├── test_cost.py              # Cost estimation tests
 │   └── test_port_scanner.py      # nmap XML parser tests
-├── terraform/                    # Complete AWS deployment
+├── terraform/                    # AWS deployment (ECS Fargate)
 │   ├── main.tf
 │   ├── variables.tf
 │   ├── modules/
@@ -160,13 +191,18 @@ cloud_audit/
 │   │   ├── iam/                  # Task execution roles
 │   │   ├── storage/              # S3 + CloudWatch + SSM for API key
 │   │   └── scheduler/            # EventBridge Scheduler for periodic runs
-│   └── examples/
-│       ├── minimal/              # Minimal on-demand setup
-│       └── scheduled/            # Scheduled weekly runs
-├── Dockerfile
+│   └── gcp/                      # GCP deployment (Cloud Run Job)
+│       ├── main.tf               # Cloud Run Job, Artifact Registry, GCS, Secret Manager
+│       ├── variables.tf
+│       ├── providers.tf
+│       └── outputs.tf
+├── Dockerfile                    # Ubuntu 24.04 + Python + gcloud CLI + nmap
+├── start.sh                      # Entrypoint: run CLI then upload reports to GCS
 ├── requirements.txt
 ├── requirements-dev.txt
-└── deploy.sh
+├── deploy.sh                     # AWS build-push-deploy helper
+├── deploy_wizard.sh              # Interactive deployment wizard (AWS + GCP)
+└── wizard.sh                     # Interactive scan wizard (AWS + GCP + External)
 ```
 
 ---
@@ -240,9 +276,9 @@ The key insight: `token tracking is first-class`. Every `ModuleResult` tracks ho
 
 ---
 
-## The Scanner Layer
+## The AWS Scanner Layer
 
-Every scanner inherits from `BaseScanner`:
+Every scanner — AWS and GCP alike — inherits from `BaseScanner`:
 
 ```python
 class BaseScanner(ABC):
@@ -414,11 +450,208 @@ class EKSScanner(BaseScanner):
 
 ---
 
+## The GCP Scanner Layer
+
+GCP scanners use the `google-cloud-*` Python client libraries and Application Default Credentials (ADC). The same `BaseScanner` contract applies — `_scan()` returns `(raw_output_dict, errors_list)` and failures are isolated.
+
+### GCP IAM Scanner
+
+GCP IAM is structurally different from AWS: permissions are attached to resources (projects, buckets, topics) via *bindings* rather than to identities. The scanner checks both directions:
+
+```python
+class GCPIAMScanner(BaseScanner):
+    def _scan(self):
+        from googleapiclient import discovery
+        crm = discovery.build("cloudresourcemanager", "v1")
+        iam = discovery.build("iam", "v1")
+
+        # Project-level IAM bindings — who has what role on the whole project
+        policy = crm.projects().getIamPolicy(resource=self.project).execute()
+        bindings = policy.get("bindings", [])
+
+        risky_roles = [
+            "roles/owner", "roles/editor",
+            "roles/iam.securityAdmin", "roles/iam.roleAdmin",
+            "roles/resourcemanager.projectIamAdmin",
+        ]
+
+        risky_bindings = []
+        for b in bindings:
+            role = b["role"]
+            members = b.get("members", [])
+            for member in members:
+                if role in risky_roles:
+                    risky_bindings.append({
+                        "member": member,
+                        "role": role,
+                        "is_service_account": member.startswith("serviceAccount:"),
+                        "is_public": member in ("allUsers", "allAuthenticatedUsers"),
+                    })
+
+        # Service account key age — user-managed keys older than 90 days are risky
+        sa_list = iam.projects().serviceAccounts().list(
+            name=f"projects/{self.project}"
+        ).execute().get("accounts", [])
+
+        stale_keys = []
+        for sa in sa_list:
+            keys = iam.projects().serviceAccounts().keys().list(
+                name=sa["name"], keyTypes=["USER_MANAGED"]
+            ).execute().get("keys", [])
+            for key in keys:
+                created = datetime.fromisoformat(
+                    key["validAfterTime"].replace("Z", "+00:00")
+                )
+                age_days = (datetime.now(timezone.utc) - created).days
+                if age_days > 90:
+                    stale_keys.append({
+                        "service_account": sa["email"],
+                        "key_id": key["name"].split("/")[-1],
+                        "age_days": age_days,
+                    })
+
+        return {
+            "risky_bindings": risky_bindings,
+            "stale_service_account_keys": stale_keys,
+            "total_bindings": len(bindings),
+        }, []
+```
+
+Key GCP IAM risks the scanner flags:
+- **`roles/owner` or `roles/editor`** on a project — wildcard permissions, equivalent to `*:*` in AWS
+- **`allUsers` or `allAuthenticatedUsers`** members — makes resources public to the internet
+- **User-managed service account keys older than 90 days** — long-lived credentials that should be rotated
+- **`roles/iam.serviceAccountTokenCreator`** — allows impersonating other service accounts
+
+### GCP Compute Scanner
+
+```python
+class GCPComputeScanner(BaseScanner):
+    def _scan(self):
+        from googleapiclient import discovery
+        compute = discovery.build("compute", "v1")
+
+        instances = []
+        agg = compute.instances().aggregatedList(project=self.project).execute()
+        for zone_data in agg.get("items", {}).values():
+            for inst in zone_data.get("instances", []):
+                metadata_items = {
+                    m["key"]: m.get("value", "")
+                    for m in inst.get("metadata", {}).get("items", [])
+                }
+                instances.append({
+                    "name": inst["name"],
+                    "zone": inst["zone"].split("/")[-1],
+                    # OS Login disabled = SSH keys in metadata (risky)
+                    "os_login_enabled": metadata_items.get(
+                        "enable-oslogin", "false") == "true",
+                    # Serial port gives console access without SSH
+                    "serial_port_enabled": metadata_items.get(
+                        "serial-port-enable", "0") == "1",
+                    # Default SA with editor scope = overprivileged
+                    "default_service_account": any(
+                        "compute@developer" in sa.get("email", "")
+                        for sa in inst.get("serviceAccounts", [])
+                    ),
+                    "public_ip": bool(
+                        inst.get("networkInterfaces", [{}])[0]
+                            .get("accessConfigs", [])
+                    ),
+                })
+
+        # Firewall rules — flag rules allowing 0.0.0.0/0 to sensitive ports
+        SENSITIVE_PORTS = {22, 3389, 5432, 3306, 27017, 6379, 9200}
+        fw_rules = compute.firewalls().list(project=self.project).execute()
+        risky_rules = []
+        for rule in fw_rules.get("items", []):
+            if rule.get("direction") == "INGRESS" and not rule.get("disabled"):
+                sources = rule.get("sourceRanges", [])
+                if "0.0.0.0/0" in sources or "::/0" in sources:
+                    for allowed in rule.get("allowed", []):
+                        for port in allowed.get("ports", []):
+                            pnum = int(port.split("-")[0])
+                            if pnum in SENSITIVE_PORTS:
+                                risky_rules.append({
+                                    "rule_name": rule["name"],
+                                    "port": port,
+                                    "protocol": allowed["IPProtocol"],
+                                })
+
+        return {"instances": instances, "risky_firewall_rules": risky_rules}, []
+```
+
+### GCP Storage Scanner
+
+GCS buckets are the GCP equivalent of S3 — and just as commonly misconfigured:
+
+```python
+class GCPStorageScanner(BaseScanner):
+    def _scan(self):
+        from google.cloud import storage
+        client = storage.Client(project=self.project)
+
+        buckets = []
+        for bucket in client.list_buckets():
+            b = client.get_bucket(bucket.name)
+            policy = b.get_iam_policy(requested_policy_version=3)
+
+            is_public = any(
+                member in ("allUsers", "allAuthenticatedUsers")
+                for binding in policy.bindings
+                for member in binding["members"]
+            )
+
+            buckets.append({
+                "name": b.name,
+                "public_access": is_public,
+                # Uniform access = no per-object ACLs (recommended)
+                "uniform_bucket_level_access":
+                    b.iam_configuration.uniform_bucket_level_access_enabled,
+                "versioning_enabled": b.versioning_enabled,
+                "default_kms_key": b.default_kms_key_name,
+                "logging_enabled": bool(b.logging),
+                "retention_policy": b.retention_policy_effective_time is not None,
+            })
+
+        return {"buckets": buckets, "total": len(buckets)}, []
+```
+
+What it flags: public buckets (`allUsers` binding), uniform bucket-level access disabled (allows per-object ACL overrides), no versioning, no CMEK encryption, no access logging.
+
+### GCP Secret Manager & Logging Scanners
+
+**Secret Manager** checks for secrets with no rotation policy, secrets accessible to overly-broad principals, and secret versions that haven't been rotated in over 90 days.
+
+**Cloud Logging** checks the audit log configuration — the most commonly missed GCP security gap:
+- **Data Access audit logs disabled** — by default GCP does *not* log read/write access to data (e.g., who read what from GCS or Secret Manager). These must be explicitly enabled and are a critical compliance requirement for SOC 2, PCI DSS, and ISO 27001.
+- **No log export sink** — Cloud Logging's default retention is 30 days. Without a sink to GCS or a SIEM, forensic evidence disappears.
+- **Admin Activity logs** — cannot be disabled, but the scanner verifies a log sink is actually capturing them outside of Cloud Logging.
+
+```python
+def _check_data_access_logs(project: str) -> dict:
+    from googleapiclient import discovery
+    crm = discovery.build("cloudresourcemanager", "v1")
+    policy = crm.projects().getIamPolicy(resource=project).execute()
+
+    audit_configs = policy.get("auditConfigs", [])
+    data_access_enabled = any(
+        any(alc.get("logType") == "DATA_READ"
+            for alc in ac.get("auditLogConfigs", []))
+        for ac in audit_configs
+    )
+    return {
+        "data_access_logging_enabled": data_access_enabled,
+        "audit_config_count": len(audit_configs),
+    }
+```
+
+---
+
 ## The AI Layer: Where the Magic Happens
 
 ### Preprocessing: Don't Send Everything to Claude
 
-Raw AWS scanner output can be enormous — a large IAM scan returns megabytes of JSON. Sending everything to Claude is expensive and hits context limits. The preprocessor reduces data to security-relevant signals:
+Raw cloud scanner output can be enormous — a large IAM scan returns megabytes of JSON. Sending everything to Claude is expensive and hits context limits. The preprocessor reduces data to security-relevant signals:
 
 ```python
 def preprocess(module_name: str, raw_output: dict, max_chars: int = 40_000) -> str:
@@ -653,7 +886,7 @@ The Markdown report is designed for:
 
 ---
 
-## Testing Strategy: 125 Tests, Zero AWS Calls
+## Testing Strategy: 125 Tests, Zero Cloud Calls
 
 ### Test Architecture
 
@@ -915,6 +1148,139 @@ The task runs for 5-15 minutes depending on account size, uploads reports to S3,
 
 ---
 
+## Deployment: GCP Cloud Run Job
+
+For GCP, StratusAI runs as a **Cloud Run Job** — a serverless batch container that starts on demand or on a Cloud Scheduler cron, runs to completion, and stops. No always-on infra, no servers to manage.
+
+### GCP Architecture
+
+```
+Cloud Scheduler (cron)
+       │
+       ▼
+Cloud Run Job  ──────────────────────────────────────────────────┐
+  ├── Image: Artifact Registry (us-central1-docker.pkg.dev/...)  │
+  ├── Service Account: stratusai-runner                          │
+  │     ├── roles/viewer on scan target project                  │
+  │     ├── roles/storage.objectCreator on reports bucket        │
+  │     └── roles/secretmanager.secretAccessor on API key secret │
+  ├── Env: GOOGLE_CLOUD_PROJECT, OUTPUT_GCS_BUCKET               │
+  └── Secret: AI API key → Secret Manager → env var at runtime   │
+       │
+       ▼                                                          │
+  start.sh runs:                                                  │
+    python -m assessment.cli --provider gcp ...                   │
+    gsutil cp /tmp/output/* gs://<bucket>/reports/  ◄────────────┘
+```
+
+One non-obvious design point: Cloud Run's filesystem is ephemeral — files written during the job are gone when the container exits. The `start.sh` entrypoint wrapper solves this by running `gsutil cp` to upload `/tmp/output/*` to GCS immediately after the CLI completes.
+
+### GCP Terraform Setup
+
+```bash
+cd terraform/gcp
+cp terraform.tfvars.example terraform.tfvars
+# Fill in: gcp_project, gcp_region, api_key (your AI provider key)
+
+terraform init
+terraform apply
+```
+
+This creates (in one `terraform apply`):
+
+| Resource | Purpose |
+|---|---|
+| `google_artifact_registry_repository` | Docker image registry |
+| `google_storage_bucket` | Report storage with versioning + lifecycle |
+| `google_secret_manager_secret` | AI API key, never in env vars |
+| `google_service_account` runner | Least-privilege identity for the job |
+| `google_cloud_run_v2_job` | The scanner job definition |
+| `google_cloud_scheduler_job` | Optional: cron trigger |
+
+Key Terraform design decisions:
+
+**Dynamic API key env var name** — the correct environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`) is selected at plan time based on the model name prefix:
+
+```hcl
+locals {
+  api_key_env_name = (
+    can(regex("^claude-", var.ai_model))          ? "ANTHROPIC_API_KEY" :
+    can(regex("^(gpt-|o1|o3|o4)", var.ai_model))  ? "OPENAI_API_KEY"    :
+    can(regex("^gemini-", var.ai_model))           ? "GOOGLE_API_KEY"    :
+    "ANTHROPIC_API_KEY"
+  )
+}
+```
+
+**`args` not `command` in Cloud Run Job** — this is a common mistake. In Terraform's `google_cloud_run_v2_job`, `command` overrides the Docker `ENTRYPOINT` (the binary itself). `args` passes flags to the existing entrypoint. Using `command = ["--provider", "gcp"]` would try to execute `--provider` as a binary and crash immediately:
+
+```hcl
+containers {
+  image = local.full_image
+  args  = local.cli_args   # ← correct: passes flags to start.sh
+  # command = ...          # ← wrong: would override the entrypoint
+}
+```
+
+### Two-Phase Deploy with the Wizard
+
+The interactive `deploy_wizard.sh` handles the full GCP deployment:
+
+```bash
+./deploy_wizard.sh
+```
+
+There's a chicken-and-egg problem with GCP deployments: Cloud Run validates the Docker image at job creation time, but the image can't be pushed until the Artifact Registry repository exists. The wizard solves this with a two-phase apply:
+
+```
+Phase 1: terraform apply -target=google_project_service.apis
+                         -target=google_artifact_registry_repository.images
+         → Creates only the registry and enables APIs
+
+docker build -t <region>-docker.pkg.dev/<project>/stratusai/stratusai:latest .
+docker push  <region>-docker.pkg.dev/<project>/stratusai/stratusai:latest
+         → Pushes image to the now-existing registry
+
+Phase 2: terraform apply
+         → Creates Cloud Run Job, GCS bucket, Secret Manager, Scheduler
+         → Image now exists, so Cloud Run validation passes
+```
+
+The wizard also:
+- Fetches and lists all accessible GCP projects so you pick by number
+- Reads AI API keys from your environment (no re-entry if already set)
+- Verifies `gcloud` auth and ADC before starting
+- Optionally triggers an immediate scan after deploy
+- Cleans up the GCS bucket before `terraform destroy` (avoiding the "bucket not empty" error)
+
+### Running GCP Scans On-Demand
+
+```bash
+# Trigger via gcloud
+gcloud run jobs execute stratusai-scan \
+  --region us-central1 \
+  --project my-gcp-project
+
+# Watch logs in real time
+gcloud logging read \
+  'resource.type=cloud_run_job AND resource.labels.job_name=stratusai-scan' \
+  --project my-gcp-project \
+  --limit 100 \
+  --format "value(textPayload)"
+
+# List completed executions
+gcloud run jobs executions list \
+  --job stratusai-scan \
+  --region us-central1
+
+# Download latest report from GCS
+gsutil cp "gs://my-gcp-project-stratusai-reports/reports/*.html" ./
+```
+
+Reports are persisted to `gs://<project>-stratusai-reports/reports/` with versioning enabled and a configurable retention lifecycle (default: 90 days).
+
+---
+
 ## Running Locally
 
 ### Installation
@@ -972,11 +1338,44 @@ stratus --provider aws --model gpt-4o         # OpenAI (requires OPENAI_API_KEY)
 stratus --provider aws --model gemini-2.0-flash  # Google (requires GOOGLE_API_KEY)
 stratus --provider aws --model o3-mini        # OpenAI reasoning model
 
-# GCP internal scan
-stratus --provider gcp --mode internal --project my-gcp-project
-
 # Upload reports to S3
 stratus --provider aws --output-s3 my-security-reports-bucket
+```
+
+### GCP Assessment
+
+```bash
+# Authenticate (one-time setup)
+gcloud auth application-default login
+
+# Basic GCP internal scan
+stratus --provider gcp --project my-gcp-project
+
+# With external scan of a public endpoint
+stratus --provider gcp --project my-gcp-project \
+  --mode both --target api.myapp.com
+
+# Scan only specific GCP modules
+stratus --provider gcp --project my-gcp-project \
+  --modules iam,compute,storage
+
+# Use Gemini as the AI (stays within Google ecosystem, no extra key needed if using ADC)
+stratus --provider gcp --project my-gcp-project \
+  --model gemini-2.0-flash
+
+# Filter to HIGH and above
+stratus --provider gcp --project my-gcp-project \
+  --severity HIGH
+
+# Add context for sharper AI analysis
+stratus --provider gcp --project my-gcp-project \
+  --context "Production data platform, handles PII, SOC 2 Type II scope"
+
+# Skip AI (raw scanner output only — useful for quick inventory)
+stratus --provider gcp --project my-gcp-project --no-ai
+
+# Or use the interactive wizard — lists all your GCP projects by number
+./wizard.sh
 ```
 
 ### Sample Output
@@ -1284,28 +1683,37 @@ git clone https://github.com/your-org/stratus-ai
 cd stratus-ai
 pip install -r requirements.txt
 
-# Set credentials
+# Run tests (no cloud credentials needed)
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v   # 125 passed
+
+# ── AWS ───────────────────────────────────────────────────────────
 export AWS_PROFILE=your-profile
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# Run tests (no AWS needed)
-pip install -r requirements-dev.txt
-python -m pytest tests/ -v   # should be 125 passed
+stratus --provider aws                                  # internal scan
+stratus --provider aws --mode both --target example.com # + external scan
+stratus --provider aws --severity HIGH                  # HIGH+ only
+stratus --provider aws --model gpt-4o                  # use OpenAI
 
-# Basic assessment
-stratus --provider aws
+# Deploy to AWS (ECS Fargate)
+cd terraform && cp terraform.tfvars.example terraform.tfvars
+vim terraform.tfvars && terraform init && terraform apply
+./deploy.sh          # build + push Docker image to ECR
 
-# Full assessment with external scan
-stratus --provider aws --mode both --target example.com
+# ── GCP ───────────────────────────────────────────────────────────
+gcloud auth application-default login
+export ANTHROPIC_API_KEY=sk-ant-...
 
-# Deploy to AWS (Terraform)
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-vim terraform.tfvars
-terraform init && terraform apply
+stratus --provider gcp --project my-gcp-project
+stratus --provider gcp --project my-gcp-project --mode both --target api.example.com
+stratus --provider gcp --project my-gcp-project --model gemini-2.0-flash
 
-# Push Docker image
-./deploy.sh
+# Deploy to GCP (Cloud Run Job) — interactive wizard handles everything
+./deploy_wizard.sh
+
+# ── Wizard (recommended for first run) ───────────────────────────
+./wizard.sh          # guides through provider, credentials, AI model, options
 ```
 
 ---
@@ -1315,16 +1723,17 @@ terraform init && terraform apply
 StratusAI demonstrates what's possible when you combine traditional infrastructure scanning with AI analysis. The individual pieces aren't new: IAM scanning, S3 bucket analysis, nmap port scanning — these have existed for years in tools like ScoutSuite, Prowler, and Steampipe.
 
 The difference is the AI layer:
-- **Context-aware analysis**: The LLM understands that "Lambda with SSRF risk + EC2 with IMDSv1 + overprivileged IAM role" is a specific attack path, not three unrelated findings
+- **Context-aware analysis**: The LLM understands that "Lambda with SSRF risk + EC2 with IMDSv1 + overprivileged IAM role" is a specific attack path, not three unrelated findings. The same cross-module reasoning applies to GCP: "GCS bucket with `allUsers` + service account with `roles/editor` + metadata server accessible = credential theft path."
 - **Intelligent prioritization**: Instead of sorting 400 findings by severity, get a top-10 list ranked by actual exploitability on *your* specific account
-- **Human-readable output**: Executive summaries that explain what an attacker could *actually do*, not just that "bucket versioning is disabled"
-- **Specific remediation**: Not "enable encryption" but `aws s3api put-bucket-encryption --bucket prod-uploads --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithmName":"aws:kms"}}]}'`
-- **Provider and model flexibility**: Scan AWS or GCP; analyze with Claude, GPT-4o, or Gemini — switch with a single `--model` flag
+- **Human-readable output**: Executive summaries that explain what an attacker could *actually do*, not just that "bucket versioning is disabled" or "Data Access audit logs are not enabled"
+- **Specific remediation**: Not "enable encryption" but `aws s3api put-bucket-encryption ...` or `gcloud projects set-iam-policy ... --member=... --role=roles/viewer`
+- **Provider and model flexibility**: Scan AWS or GCP; analyze with Claude, GPT-4o, or Gemini — switch with a single `--model` flag. Running a GCP scan with Gemini keeps everything within the Google ecosystem.
+- **Serverless deployment on both clouds**: AWS ECS Fargate or GCP Cloud Run Job — deploy once, scan on a schedule, reports land in S3 or GCS automatically
 
-The tool runs locally in 5 minutes, deploys to AWS ECS for automated weekly runs, costs under $0.15 per assessment (or under $0.02 with Gemini), and produces reports your CISO will actually read.
+The tool runs locally in 5 minutes, deploys to AWS or GCP for automated weekly runs, costs under $0.15 per assessment (or under $0.02 with Gemini), and produces reports your CISO will actually read.
 
 All code is in the repository. The 125-test suite means you can modify anything with confidence.
 
 ---
 
-*All code in this article is from the StratusAI project. The tool is designed for authorized security assessments of AWS environments you own or have explicit permission to scan.*
+*All code in this article is from the StratusAI project. The tool is designed for authorized security assessments of AWS and GCP environments you own or have explicit permission to scan.*
