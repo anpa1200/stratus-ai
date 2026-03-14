@@ -372,6 +372,19 @@ echo -e "    Trigger scan:  ${CYAN}./deploy.sh --run-only  --region ${AWS_REGION
 echo -e "    Destroy:       ${CYAN}./deploy.sh --destroy   --region ${AWS_REGION}${RESET}"
 echo
 
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+hr
+echo -e "\n  ${BOLD}Cleanup${RESET}\n"
+if confirm "Destroy all AWS infrastructure now? (ECS, ECR, S3, SSM — cannot be undone)"; then
+  echo
+  warn "Destroying all StratusAI AWS infrastructure..."
+  bash ./deploy.sh --destroy --region "$AWS_REGION"
+  ok "Infrastructure destroyed."
+else
+  info "Infrastructure left running. Destroy later with: ./deploy.sh --destroy --region ${AWS_REGION}"
+fi
+echo
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # GCP DEPLOYMENT PATH
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -667,6 +680,23 @@ echo -e "    Trigger scan:  ${CYAN}${RUN_CMD}${RESET}"
 echo -e "    View logs:     ${CYAN}gcloud logging read 'resource.type=cloud_run_job AND resource.labels.job_name=${JOB_NAME}' --project ${GCP_PROJECT} --limit 50${RESET}"
 echo -e "    Re-deploy:     ${CYAN}docker build -t ${IMAGE_PATH} . && docker push ${IMAGE_PATH}${RESET}"
 echo -e "    Destroy:       ${CYAN}terraform -chdir=./terraform/gcp destroy${RESET}"
+echo
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+hr
+echo -e "\n  ${BOLD}Cleanup${RESET}\n"
+if confirm "Destroy all GCP infrastructure now? (Cloud Run, Artifact Registry, GCS, Secret Manager — cannot be undone)"; then
+  echo
+  warn "Destroying all StratusAI GCP infrastructure..."
+  terraform -chdir=./terraform/gcp destroy -auto-approve
+  ok "Infrastructure destroyed."
+
+  if confirm "Also delete the local Docker image (stratusai:build)?"; then
+    docker rmi stratusai:build 2>/dev/null && ok "Local image removed." || true
+  fi
+else
+  info "Infrastructure left running. Destroy later with: terraform -chdir=./terraform/gcp destroy"
+fi
 echo
 
 fi  # end GCP path

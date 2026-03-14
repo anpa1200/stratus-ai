@@ -459,4 +459,19 @@ if [[ -n "${HTML_REPORT:-}" ]]; then
   command -v open      &>/dev/null && open      "$HTML_REPORT" &>/dev/null & true
 fi
 
+# =============================================================================
+# Cleanup
+# =============================================================================
+echo
+hr
+echo -e "  ${BOLD}Cleanup options${NC}\n"
+
+if $USE_DOCKER && confirm "Remove the local Docker image (stratus-ai)?"; then
+  docker rmi stratus-ai 2>/dev/null && ok "Docker image removed." || warn "Image not found."
+fi
+
+if [[ -d "$ABS_OUTPUT" ]] && confirm "Delete report files in ${ABS_OUTPUT}?"; then
+  rm -rf "${ABS_OUTPUT:?}"/* && ok "Output directory cleared."
+fi
+
 echo -e "\n  ${DIM}To re-run: bash wizard.sh${NC}\n"
