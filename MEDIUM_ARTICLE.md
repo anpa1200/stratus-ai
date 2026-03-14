@@ -122,7 +122,7 @@ The result: an interactive HTML report you can share with your CISO, showing exa
           + SSM + EventBridge                   + GCS + Secret Manager
                     │                           + Cloud Scheduler
              ./deploy.sh                              │
-                                             ./deploy_wizard.sh
+                                               ./wizard.sh
 ```
 
 Two-stage AI pipeline:
@@ -201,8 +201,7 @@ cloud_audit/
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── deploy.sh                     # AWS build-push-deploy helper
-├── deploy_wizard.sh              # Interactive deployment wizard (AWS + GCP)
-└── wizard.sh                     # Interactive scan wizard (AWS + GCP + External)
+└── wizard.sh                     # Unified wizard: scan OR deploy (AWS + GCP + External)
 ```
 
 ---
@@ -1224,10 +1223,13 @@ containers {
 
 ### Two-Phase Deploy with the Wizard
 
-The interactive `deploy_wizard.sh` handles the full GCP deployment:
+The unified `wizard.sh` handles the full GCP deployment when you pick **"Deploy infrastructure"** at the opening menu:
 
 ```bash
-./deploy_wizard.sh
+./wizard.sh
+# Step 0: Choose an action:
+#   1) Run a scan now
+#   2) Deploy infrastructure   ← pick this
 ```
 
 There's a chicken-and-egg problem with GCP deployments: Cloud Run validates the Docker image at job creation time, but the image can't be pushed until the Artifact Registry repository exists. The wizard solves this with a two-phase apply:
@@ -1247,9 +1249,10 @@ Phase 2: terraform apply
 ```
 
 The wizard also:
-- Fetches and lists all accessible GCP projects so you pick by number
+- Fetches and lists all accessible GCP projects so you pick by number (both for the deploy-into project and the scan target)
 - Reads AI API keys from your environment (no re-entry if already set)
 - Verifies `gcloud` auth and ADC before starting
+- Supports scanning a *different* project than the one you deploy into
 - Optionally triggers an immediate scan after deploy
 - Cleans up the GCS bucket before `terraform destroy` (avoiding the "bucket not empty" error)
 
@@ -1412,168 +1415,136 @@ stratus --provider gcp --project my-gcp-project --no-ai
 
 ## Quick Start with the Wizard
 
-If you'd rather not memorize CLI flags, `wizard.sh` walks you through every parameter interactively and builds the correct command for you.
+`wizard.sh` is the single entry point for everything: running a scan *or* deploying the infrastructure. Run it once and it guides you through whichever flow you need.
 
 ```bash
 chmod +x wizard.sh
 ./wizard.sh
 ```
 
-The wizard runs in seven steps:
+The first thing the wizard asks is what you want to do:
 
 ```
-╔══════════════════════════════════════════════════════════════════╗
-║          StratusAI — Interactive Setup Wizard                   ║
-║          AWS · GCP · External  ×  Claude · GPT-4o · Gemini      ║
-╚══════════════════════════════════════════════════════════════════╝
+  Step 0 — What would you like to do?
+    1)  Run a scan now        — assess AWS / GCP / external target (local or Docker)
+    2)  Deploy infrastructure — set up Cloud Run Job (GCP) or ECS Fargate (AWS) + scheduler
 
-  Step 1: Execution mode ........... Docker (recommended) or local Python
-  Step 2: Cloud provider ........... AWS / GCP / External-only
-  Step 3: Scan mode + target ....... Internal / External / Both  +  hostname
-  Step 4: Cloud credentials ........ AWS profile + region  OR  GCP project + ADC
-  Step 5: AI model + API key ....... Claude / GPT-4o / Gemini  (with cost hints)
-  Step 6: Options .................. Severity filter, module list, context, output dir
-  Step 7: Review + launch .......... Shows the full command, asks for confirmation
+  Enter 1-2 [1]:
 ```
 
-### Step-by-step walkthrough
+### Scan path (option 1) — 7 steps
 
-**Step 1 — Execution mode**
-
-```
-How do you want to run StratusAI?
-  1) Docker (recommended — no local Python dependencies)
-  2) Local Python (requires pip install -r requirements.txt)
-
-Choice [1]: 1
-```
-
-Docker mode mounts your `~/.aws` or `~/.config/gcloud` credentials inside the container, so no credentials are baked into the image.
-
-**Step 2 — Cloud provider**
+Walks you through a one-off assessment. Takes about 2 minutes to configure.
 
 ```
-Which cloud provider do you want to scan?
-  1) AWS
-  2) GCP (Google Cloud)
-  3) External only (web app / hostname — no cloud credentials needed)
+  Step 1 of 7 — Execution Mode
+    1)  Docker  (recommended — no local dependencies needed)
+    2)  Local Python  (requires: pip install -r requirements.txt)
 
-Choice [1]: 1
+  Step 2 of 7 — Cloud Provider
+    1)  AWS      — Amazon Web Services
+    2)  GCP      — Google Cloud Platform
+    3)  External — External-only scan (any public hostname, no cloud credentials)
+
+  Step 3 of 7 — Scan Mode
+    1)  Internal  — Cloud API scanning (IAM, storage, compute, …)
+    2)  External  — Network scanning (ports, TLS, headers, DNS)
+    3)  Both      — Internal + external (recommended)
+
+  External target hostname or IP for external scan (Enter to skip): myapp.example.com
+
+  Step 4 of 7 — Cloud Credentials
+    # AWS: reads ~/.aws profiles, lets you pick profile + region
+    # GCP: checks ADC, then lists all accessible projects by number:
+
+    ▸ Fetching accessible GCP projects...
+      1)  my-prod-project-123  —  Production App
+      2)  my-staging-4567      —  Staging Environment
+      3)  data-pipeline-9999   —  Data Platform
+      4)  Enter project ID manually
+    Enter 1-4 [1]: 2
+  ✓ Selected: my-staging-4567
+
+  Step 5 of 7 — AI Model
+    Estimated cost per full scan:
+      Gemini 2.0 Flash      ~$0.01   fastest + cheapest
+      Claude Haiku 4.5      ~$0.01   fast + cheap
+      Claude Sonnet 4.6     ~$0.06   best quality  ← default
+      Claude Opus 4.6       ~$0.30   highest quality
+
+    1)  Anthropic  (Claude Sonnet / Haiku / Opus)
+    2)  OpenAI     (GPT-4o, GPT-4o mini, o3-mini, o1)
+    3)  Google     (Gemini 2.0 Flash, 1.5 Pro, 1.5 Flash)
+
+  Step 6 of 7 — Scan Options
+    Minimum severity filter, module selection, environment context, output dir
+
+  Step 7 of 7 — Review
+    Prints full configuration summary → asks for confirmation → launches
 ```
 
-**Step 3 — Scan mode**
+After the scan, the wizard prints clickable `file://` links to every generated report and auto-opens the HTML in your browser:
 
 ```
-Scan mode:
-  1) Internal   — cloud API scan (IAM, compute, storage, …)
-  2) External   — web/network scan of a public hostname
-  3) Both       — run internal + external together
+╔══════════════════════════════════════╗
+║   Assessment complete!               ║
+╚══════════════════════════════════════╝
+✓ Reports saved to: /home/user/output/
 
-Choice [1]: 3
-
-External target hostname or IP (e.g. api.example.com): myapp.example.com
+  Generated reports:
+    🌐  file:///home/user/output/report_2026-03-14T10-00-00Z.html
+    📄  file:///home/user/output/report_2026-03-14T10-00-00Z.md
+    📋  file:///home/user/output/report_2026-03-14T10-00-00Z.json
 ```
 
-**Step 4 — Cloud credentials**
+### Deploy path (option 2) — 9 steps
 
-For AWS the wizard reads your configured profiles and lets you pick:
+Provisions and deploys the full scheduled-scan infrastructure on AWS (ECS Fargate) or GCP (Cloud Run Job).
 
+**AWS deploy flow:**
 ```
-AWS profile [default]:
-AWS region  [us-east-1]:
-```
-
-For GCP it checks Application Default Credentials and then **lists all accessible projects on your account** so you can pick by number — no need to remember or type a project ID:
-
-```
-▸ GCP Application Default Credentials found
-▸ Fetching accessible GCP projects...
-
-  Select GCP project to scan:
-    1)  my-prod-project-123  —  Production App
-    2)  my-staging-4567      —  Staging Environment
-    3)  data-pipeline-9999   —  Data Platform
-    4)  Enter project ID manually
-
-  Enter 1-4 [1]: 2
-✓ Selected: my-staging-4567
-GCP region [us-central1]:
+  Step 1 — Platform:      AWS or GCP
+  Step 2 — Dependencies:  verifies aws / docker / terraform are installed
+  Step 3 — AWS auth:      lists configured profiles, verifies via STS
+  Step 4 — Settings:      region, name prefix, environment label
+  Step 5 — Networking:    auto-use default VPC  OR  specify VPC + subnets
+                          (lists your VPCs and subnets for easy selection)
+  Step 6 — AI model:      pick model + enter API key (reads from env if set)
+  Step 7 — Scan config:   regions, severity, external target, modules, context
+  Step 8 — Scheduler:     EventBridge rate/cron expression  (e.g. rate(7 days))
+  Step 9 — Post-deploy:   optionally trigger an immediate scan
+  → writes terraform/terraform.tfvars
+  → runs ./deploy.sh
 ```
 
-If `gcloud` can't list projects (e.g. missing permissions), it falls back to a plain text prompt.
-
-**Step 5 — AI model**
-
+**GCP deploy flow:**
 ```
-Choose AI model:
-  1) claude-sonnet-4-6   (Anthropic — best quality, ~$0.08/scan)
-  2) claude-haiku-4-5    (Anthropic — fast + cheap, ~$0.01/scan)
-  3) gpt-4o              (OpenAI    — strong alternative, ~$0.10/scan)
-  4) o3-mini             (OpenAI    — reasoning model, ~$0.06/scan)
-  5) gemini-2.0-flash    (Google    — very cheap, ~$0.005/scan)
-  6) Custom model ID
-
-Choice [1]: 1
-
-Anthropic API key (input hidden): ****
-```
-
-**Step 6 — Options**
-
-```
-Minimum severity to include [INFO / LOW / MEDIUM / HIGH / CRITICAL] [INFO]: MEDIUM
-Modules to run (comma-separated, or press Enter for all):
-Environment context (helps the AI tailor findings):
-  e.g. "Production fintech, PCI DSS scope"
-  [leave blank to skip]: Production SaaS, handles PII
-Output directory [./output]:
+  Step 1 — Platform:      GCP
+  Step 2 — Dependencies:  verifies gcloud / docker / terraform
+  Step 3 — GCP auth:      checks active account + Application Default Credentials
+  Step 4 — Project:       pick deploy-into project from numbered list + region + prefix
+  Step 5 — Scan target:   same project  OR  pick a different project from numbered list
+  Step 6 — AI model:      pick model + API key
+  Step 7 — Scan config:   severity, external target, modules, context
+  Step 8 — Scheduler:     Cloud Scheduler cron  (e.g. 0 8 * * 1 = Mondays at 08:00)
+  Step 9 — Post-deploy:   optionally trigger an immediate scan
+  → writes terraform/gcp/terraform.tfvars
+  → Phase 1: terraform apply (APIs + Artifact Registry only)
+  → docker build + push image
+  → Phase 2: terraform apply (Cloud Run Job + GCS + Secret Manager + Scheduler)
 ```
 
-**Step 7 — Review and launch**
-
-The wizard prints the full Docker command so you can inspect it before anything runs:
-
-```
-╔══════════════════════════════════════════════════════════════════╗
-║                    Configuration Summary                        ║
-╚══════════════════════════════════════════════════════════════════╝
-
-  Execution:   Docker
-  Provider:    AWS
-  Mode:        both
-  Target:      myapp.example.com
-  Region:      us-east-1
-  Profile:     default
-  AI Model:    claude-sonnet-4-6
-  Severity:    MEDIUM
-  Context:     Production SaaS, handles PII
-  Output:      ./output
-
-Command:
-  docker run --rm \
-    -e ANTHROPIC_API_KEY=**** \
-    -e AWS_REGION=us-east-1 \
-    -v ~/.aws:/root/.aws:ro \
-    -v ./output:/app/output \
-    stratus-ai \
-      --provider aws --mode both --target myapp.example.com \
-      --model claude-sonnet-4-6 \
-      --context "Production SaaS, handles PII" \
-      --severity MEDIUM \
-      --output-dir /app/output
-
-Launch? [y/N]: y
-```
+Both deploy paths write a `terraform.tfvars` file, show a full summary before applying, and offer cleanup (destroy) at the end.
 
 ### When to use the wizard vs the CLI directly
 
 | Scenario | Use |
 |---|---|
 | First time running StratusAI | `./wizard.sh` |
-| Iterating quickly in a terminal | `stratus --provider aws ...` |
+| One-off scan, know the flags | `stratus --provider aws ...` |
+| Deploying to AWS or GCP | `./wizard.sh` → option 2 |
 | CI/CD pipeline | CLI with env vars |
-| Sharing a runbook with the team | Wizard — shows the full command for copy-paste |
-| Comparing providers (AWS vs GCP) | Wizard — guides credential setup per provider |
+| Sharing a runbook with the team | Wizard — prints full command in Step 7 for copy-paste |
 
 ---
 
@@ -1661,8 +1632,8 @@ Shipped since the initial release:
 - **Multi-LLM support** — Claude (Anthropic), GPT-4o/o1/o3/o4-mini (OpenAI), Gemini 2.0/1.5 (Google)
 - **Tiered model selection** — low-signal modules auto-downgrade to cheaper models (Haiku, gpt-4o-mini, gemini-flash)
 - **`--context` flag** — free-text environment description that sharpens AI severity ratings
-- **`deploy_wizard.sh`** — interactive deployment wizard for AWS (ECS Fargate) and GCP (Cloud Run Job); handles auth, Artifact Registry setup, Secret Manager, and optional Cloud Scheduler in one flow
-- **Numbered project selection** — `wizard.sh` and `deploy_wizard.sh` now list all accessible GCP projects on your account so you can pick by number instead of typing a project ID
+- **Unified `wizard.sh`** — single interactive wizard for both running scans *and* deploying infrastructure (AWS ECS Fargate or GCP Cloud Run Job); handles auth, Artifact Registry setup, Secret Manager, scheduled runs, and optional immediate post-deploy scan in one flow
+- **Numbered GCP project selection** — `wizard.sh` lists all accessible GCP projects on your account so you can pick by number instead of typing a project ID; works for scan target, deploy-into project, and scan target when they differ
 
 Features in progress:
 
@@ -1709,11 +1680,11 @@ stratus --provider gcp --project my-gcp-project
 stratus --provider gcp --project my-gcp-project --mode both --target api.example.com
 stratus --provider gcp --project my-gcp-project --model gemini-2.0-flash
 
-# Deploy to GCP (Cloud Run Job) — interactive wizard handles everything
-./deploy_wizard.sh
+# Deploy to GCP (Cloud Run Job) — wizard handles everything
+./wizard.sh          # pick option 2 (Deploy infrastructure) → GCP
 
-# ── Wizard (recommended for first run) ───────────────────────────
-./wizard.sh          # guides through provider, credentials, AI model, options
+# ── Wizard (recommended for first run or deploy) ─────────────────
+./wizard.sh          # option 1: scan  |  option 2: deploy to AWS or GCP
 ```
 
 ---
