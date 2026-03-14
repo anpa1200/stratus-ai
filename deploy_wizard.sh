@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # StratusAI — Deployment Wizard
-# Interactively collects all deployment parameters, verifies AWS auth,
-# writes terraform/terraform.tfvars, and calls deploy.sh.
+# Interactively collects all deployment parameters for AWS or GCP,
+# writes the appropriate terraform.tfvars, and deploys.
 #
 # Usage: ./deploy_wizard.sh
 
@@ -35,11 +35,11 @@ ask_secret() {
   echo "$reply"
 }
 
+# Prints numbered options then reads a choice; returns the number chosen.
 ask_choice() {
-  # ask_choice "Prompt" "default_num" "opt1" "opt2" ...
   local prompt="$1" default="$2"; shift 2
-  local opts=("$@") i=1
-  for opt in "${opts[@]}"; do
+  local i=1
+  for opt in "$@"; do
     if [[ "$i" == "$default" ]]; then
       echo -e "    ${GREEN}${i}) ${opt}${RESET}"
     else
@@ -49,13 +49,11 @@ ask_choice() {
   done
   echo -en "  ${BOLD}${prompt} [${default}]: ${RESET}"
   read -r reply
-  reply="${reply:-$default}"
-  echo "$reply"
+  echo "${reply:-$default}"
 }
 
 confirm() {
-  local prompt="${1:-Continue?}"
-  echo -en "  ${BOLD}${prompt} [y/N]: ${RESET}"
+  echo -en "  ${BOLD}${1:-Continue?} [y/N]: ${RESET}"
   read -r reply
   [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]
 }
@@ -65,23 +63,44 @@ clear
 echo
 hr
 echo -e "  ${BOLD}${MAGENTA}StratusAI — Deployment Wizard${RESET}"
-echo -e "  Deploy StratusAI to AWS (ECS Fargate + ECR + S3 + SSM)"
+echo -e "  Deploy StratusAI to ${BOLD}AWS${RESET} (ECS Fargate) or ${BOLD}GCP${RESET} (Cloud Run Job)"
 hr
 echo
-echo -e "  This wizard will:"
-echo -e "    1. Verify your AWS credentials"
-echo -e "    2. Collect deployment configuration"
-echo -e "    3. Write ${CYAN}terraform/terraform.tfvars${RESET}"
-echo -e "    4. Run ${CYAN}./deploy.sh${RESET} to provision infrastructure + push image"
-echo
 
-# ── Step 0: Check dependencies ────────────────────────────────────────────────
-section "0 — Checking dependencies"
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 0 — Choose cloud provider
+# ═══════════════════════════════════════════════════════════════════════════════
+section "0 — Target cloud platform"
+
+echo -e "  Where do you want to deploy StratusAI?"
+echo
+PLATFORM_CHOICE=$(ask_choice "Platform" "1" \
+  "AWS  — ECS Fargate + ECR + S3 + SSM + EventBridge" \
+  "GCP  — Cloud Run Job + Artifact Registry + GCS + Secret Manager + Cloud Scheduler")
+
+if [[ "$PLATFORM_CHOICE" == "1" ]]; then
+  PLATFORM="aws"
+  echo; ok "Deploying to AWS"
+else
+  PLATFORM="gcp"
+  echo; ok "Deploying to GCP"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1 — Check dependencies
+# ═══════════════════════════════════════════════════════════════════════════════
+section "1 — Checking dependencies"
 
 MISSING=()
-for cmd in aws docker terraform; do
+if [[ "$PLATFORM" == "aws" ]]; then
+  REQUIRED_TOOLS=(aws docker terraform)
+else
+  REQUIRED_TOOLS=(gcloud docker terraform)
+fi
+
+for cmd in "${REQUIRED_TOOLS[@]}"; do
   if command -v "$cmd" &>/dev/null; then
-    ok "$cmd found ($(command -v "$cmd"))"
+    ok "$cmd  →  $(command -v "$cmd")"
   else
     err "$cmd not found"
     MISSING+=("$cmd")
@@ -91,269 +110,205 @@ done
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo
   warn "Install missing tools before deploying:"
-  [[ " ${MISSING[*]} " == *" aws "* ]]        && info "  aws:       https://aws.amazon.com/cli/"
-  [[ " ${MISSING[*]} " == *" docker "* ]]     && info "  docker:    https://docs.docker.com/get-docker/"
-  [[ " ${MISSING[*]} " == *" terraform "* ]]  && info "  terraform: https://developer.hashicorp.com/terraform/install"
+  [[ " ${MISSING[*]} " == *" aws "* ]]       && info "aws:       https://aws.amazon.com/cli/"
+  [[ " ${MISSING[*]} " == *" gcloud "* ]]    && info "gcloud:    https://cloud.google.com/sdk/docs/install"
+  [[ " ${MISSING[*]} " == *" docker "* ]]    && info "docker:    https://docs.docker.com/get-docker/"
+  [[ " ${MISSING[*]} " == *" terraform "* ]] && info "terraform: https://developer.hashicorp.com/terraform/install"
   exit 1
 fi
 
-# ── Step 1: AWS Authentication ────────────────────────────────────────────────
-section "1 — AWS Authentication"
+# ═══════════════════════════════════════════════════════════════════════════════
+# AWS DEPLOYMENT PATH
+# ═══════════════════════════════════════════════════════════════════════════════
+if [[ "$PLATFORM" == "aws" ]]; then
 
-AWS_PROFILE_ARG=""
-echo -e "  Available AWS profiles:"
-if aws configure list-profiles 2>/dev/null | head -10 | while read -r p; do echo "    • $p"; done; then
-  true
-else
+# ── AWS Step 2: Authentication ────────────────────────────────────────────────
+section "2 — AWS authentication"
+
+echo -e "  Available profiles:"
+aws configure list-profiles 2>/dev/null | while read -r p; do echo "    • $p"; done || \
   info "(no profiles found — using environment credentials)"
-fi
 echo
 
 AWS_PROFILE=$(ask "AWS profile" "default")
-[[ -n "$AWS_PROFILE" && "$AWS_PROFILE" != "default" ]] && export AWS_PROFILE && AWS_PROFILE_ARG="--profile $AWS_PROFILE"
+PROFILE_ARG=""
+[[ "$AWS_PROFILE" != "default" ]] && export AWS_PROFILE && PROFILE_ARG="--profile $AWS_PROFILE"
 
-echo
 info "Verifying credentials..."
-if CALLER=$(aws sts get-caller-identity $AWS_PROFILE_ARG --output json 2>/dev/null); then
+if CALLER=$(aws sts get-caller-identity $PROFILE_ARG --output json 2>/dev/null); then
   ACCOUNT_ID=$(echo "$CALLER" | grep -o '"Account": "[^"]*"' | cut -d'"' -f4)
   CALLER_ARN=$(echo "$CALLER" | grep -o '"Arn": "[^"]*"' | cut -d'"' -f4)
-  ok "Authenticated as: ${CALLER_ARN}"
-  ok "Account ID:       ${ACCOUNT_ID}"
+  ok "Authenticated:  ${CALLER_ARN}"
+  ok "Account ID:     ${ACCOUNT_ID}"
 else
-  err "AWS authentication failed."
-  warn "Run 'aws configure' or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY."
+  err "AWS authentication failed. Run 'aws configure' or set AWS_ACCESS_KEY_ID."
   exit 1
 fi
 
-# ── Step 2: Deployment Basics ─────────────────────────────────────────────────
-section "2 — Deployment basics"
+# ── AWS Step 3: Basics ────────────────────────────────────────────────────────
+section "3 — Deployment settings"
 
 AWS_REGION=$(ask "AWS region" "us-east-1")
 NAME_PREFIX=$(ask "Resource name prefix" "stratusai")
-ENVIRONMENT=$(ask "Environment label (e.g. prod, staging)" "prod")
+ENVIRONMENT=$(ask "Environment label (prod / staging)" "prod")
 
-# ── Step 3: Networking ────────────────────────────────────────────────────────
-section "3 — Networking (VPC & Subnets)"
+# ── AWS Step 4: Networking ────────────────────────────────────────────────────
+section "4 — Networking (VPC & subnets)"
 
-echo -e "  StratusAI runs as an ECS Fargate task and needs a VPC + subnet."
-echo -e "  You can use an existing VPC or let Terraform create a new one."
+echo -e "  ECS Fargate tasks need a VPC and at least one public subnet."
 echo
+NET_CHOICE=$(ask_choice "VPC" "1" \
+  "Auto — use existing default VPC (recommended)" \
+  "Custom — specify VPC and subnet IDs")
 
-echo -e "    1) Create a new VPC (simplest)"
-echo -e "    2) Use an existing VPC"
-NET_CHOICE=$(ask_choice "Choice" "1" "Create new VPC" "Use existing VPC")
-
-VPC_ID=""
-SUBNET_IDS=""
-
+VPC_ID=""; SUBNET_IDS=""
 if [[ "$NET_CHOICE" == "2" ]]; then
   echo
   info "Fetching VPCs in ${AWS_REGION}..."
-  aws ec2 describe-vpcs $AWS_PROFILE_ARG --region "$AWS_REGION" \
+  aws ec2 describe-vpcs $PROFILE_ARG --region "$AWS_REGION" \
     --query 'Vpcs[*].[VpcId,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
-    --output text 2>/dev/null | while IFS=$'\t' read -r id cidr name; do
-      echo "    ${id}  ${cidr}  ${name:-<no name>}"
-    done || warn "Could not list VPCs — enter ID manually."
+    --output text 2>/dev/null | \
+    while IFS=$'\t' read -r id cidr name; do
+      printf "    %-22s  %-18s  %s\n" "$id" "$cidr" "${name:-<no name>}"
+    done || warn "Could not list VPCs."
   echo
   VPC_ID=$(ask "VPC ID (e.g. vpc-0abc1234)")
-
   echo
   info "Fetching subnets for ${VPC_ID}..."
-  aws ec2 describe-subnets $AWS_PROFILE_ARG --region "$AWS_REGION" \
+  aws ec2 describe-subnets $PROFILE_ARG --region "$AWS_REGION" \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
     --query 'Subnets[*].[SubnetId,AvailabilityZone,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
-    --output text 2>/dev/null | while IFS=$'\t' read -r id az cidr name; do
-      echo "    ${id}  ${az}  ${cidr}  ${name:-<no name>}"
+    --output text 2>/dev/null | \
+    while IFS=$'\t' read -r id az cidr name; do
+      printf "    %-24s  %-14s  %-18s  %s\n" "$id" "$az" "$cidr" "${name:-<no name>}"
     done || warn "Could not list subnets."
   echo
   SUBNET_IDS=$(ask "Subnet IDs (comma-separated, e.g. subnet-aaa,subnet-bbb)")
 fi
 
-# ── Step 4: AI Configuration ──────────────────────────────────────────────────
-section "4 — AI configuration"
+# ── AWS Step 5: AI ────────────────────────────────────────────────────────────
+section "5 — AI model & API key"
 
-echo -e "    1) claude-sonnet-4-6   ${CYAN}(recommended — best quality, ~\$0.08/scan)${RESET}"
-echo -e "    2) claude-haiku-4-5-20251001    ${CYAN}(fast + cheap, ~\$0.01/scan)${RESET}"
-echo -e "    3) claude-opus-4-6     ${CYAN}(most capable, ~\$0.30/scan)${RESET}"
-echo -e "    4) gpt-4o              ${CYAN}(OpenAI — ~\$0.10/scan, needs OPENAI_API_KEY)${RESET}"
-echo -e "    5) gemini-2.0-flash    ${CYAN}(Google — ~\$0.005/scan, needs GOOGLE_API_KEY)${RESET}"
-echo -e "    6) Disable AI          ${CYAN}(raw scanner output only, free)${RESET}"
+echo -e "    1) claude-sonnet-4-6          ${CYAN}Anthropic  ~\$0.08/scan  (recommended)${RESET}"
+echo -e "    2) claude-haiku-4-5-20251001  ${CYAN}Anthropic  ~\$0.01/scan  (budget)${RESET}"
+echo -e "    3) claude-opus-4-6            ${CYAN}Anthropic  ~\$0.30/scan  (best quality)${RESET}"
+echo -e "    4) gpt-4o                     ${CYAN}OpenAI     ~\$0.10/scan${RESET}"
+echo -e "    5) gemini-2.0-flash           ${CYAN}Google     ~\$0.005/scan (cheapest)${RESET}"
+echo -e "    6) No AI                      ${CYAN}Free — raw scanner output only${RESET}"
 echo
-MODEL_CHOICE=$(ask_choice "Model" "1" \
+AI_CHOICE=$(ask_choice "Model" "1" \
   "claude-sonnet-4-6" "claude-haiku-4-5-20251001" "claude-opus-4-6" \
-  "gpt-4o" "gemini-2.0-flash" "Disable AI")
+  "gpt-4o" "gemini-2.0-flash" "No AI")
 
-ENABLE_AI="true"
-AI_MODEL="claude-sonnet-4-6"
-API_KEY=""
-API_KEY_PROVIDER=""
-
-case "$MODEL_CHOICE" in
-  1) AI_MODEL="claude-sonnet-4-6";          API_KEY_PROVIDER="anthropic" ;;
-  2) AI_MODEL="claude-haiku-4-5-20251001";  API_KEY_PROVIDER="anthropic" ;;
-  3) AI_MODEL="claude-opus-4-6";            API_KEY_PROVIDER="anthropic" ;;
-  4) AI_MODEL="gpt-4o";                     API_KEY_PROVIDER="openai"    ;;
-  5) AI_MODEL="gemini-2.0-flash";           API_KEY_PROVIDER="google"    ;;
-  6) ENABLE_AI="false";                     API_KEY_PROVIDER="none"      ;;
+ENABLE_AI="true"; AI_MODEL="claude-sonnet-4-6"; API_KEY=""
+case "$AI_CHOICE" in
+  1) AI_MODEL="claude-sonnet-4-6" ;;
+  2) AI_MODEL="claude-haiku-4-5-20251001" ;;
+  3) AI_MODEL="claude-opus-4-6" ;;
+  4) AI_MODEL="gpt-4o" ;;
+  5) AI_MODEL="gemini-2.0-flash" ;;
+  6) ENABLE_AI="false" ;;
 esac
 
 if [[ "$ENABLE_AI" == "true" ]]; then
   echo
-  case "$API_KEY_PROVIDER" in
-    anthropic)
-      ENV_KEY="${ANTHROPIC_API_KEY:-}"
-      if [[ -n "$ENV_KEY" ]]; then
-        ok "ANTHROPIC_API_KEY found in environment (${ENV_KEY:0:10}...)"
-        API_KEY="$ENV_KEY"
-      else
-        API_KEY=$(ask_secret "Anthropic API key (sk-ant-...)")
-      fi
-      if [[ "$API_KEY" != sk-ant-* ]]; then
-        warn "Key doesn't look like an Anthropic key (expected sk-ant-...)"
-      fi
-      ;;
-    openai)
-      ENV_KEY="${OPENAI_API_KEY:-}"
-      if [[ -n "$ENV_KEY" ]]; then
-        ok "OPENAI_API_KEY found in environment"
-        API_KEY="$ENV_KEY"
-      else
-        API_KEY=$(ask_secret "OpenAI API key (sk-...)")
-      fi
-      warn "Note: Terraform stores the key in SSM as 'anthropic_api_key' variable name."
-      warn "The CLI will read it correctly — model=${AI_MODEL} routes to OpenAI automatically."
-      ;;
-    google)
-      ENV_KEY="${GOOGLE_API_KEY:-}"
-      if [[ -n "$ENV_KEY" ]]; then
-        ok "GOOGLE_API_KEY found in environment"
-        API_KEY="$ENV_KEY"
-      else
-        API_KEY=$(ask_secret "Google API key (AIza...)")
-      fi
-      ;;
+  case "$AI_MODEL" in
+    claude-*) ENV_KEY="${ANTHROPIC_API_KEY:-}"; KEY_PREFIX="sk-ant-" ;;
+    gpt-*)    ENV_KEY="${OPENAI_API_KEY:-}";    KEY_PREFIX="sk-" ;;
+    gemini-*) ENV_KEY="${GOOGLE_API_KEY:-}";    KEY_PREFIX="AIza" ;;
   esac
+  if [[ -n "$ENV_KEY" ]]; then
+    ok "API key found in environment (${ENV_KEY:0:10}...)"
+    API_KEY="$ENV_KEY"
+  else
+    API_KEY=$(ask_secret "API key")
+  fi
+  if [[ "$API_KEY" != ${KEY_PREFIX}* ]]; then
+    warn "Key prefix doesn't match expected '${KEY_PREFIX}...' — double-check before deploying."
+  fi
 fi
 
-# ── Step 5: Scan Configuration ────────────────────────────────────────────────
-section "5 — Scan configuration"
+# ── AWS Step 6: Scan config ────────────────────────────────────────────────────
+section "6 — Scan configuration"
 
 SCAN_REGIONS=$(ask "AWS regions to scan (comma-separated)" "$AWS_REGION")
-
 echo
-echo -e "  Minimum severity to include in reports:"
-echo -e "    1) INFO     — everything"
-echo -e "    2) LOW"
-echo -e "    3) MEDIUM   — recommended"
-echo -e "    4) HIGH"
-echo -e "    5) CRITICAL — only showstoppers"
-SEV_CHOICE=$(ask_choice "Severity" "1" INFO LOW MEDIUM HIGH CRITICAL)
-SEVERITY=""
+echo -e "  Minimum severity filter:"
+SEV_CHOICE=$(ask_choice "Severity" "1" \
+  "INFO (everything)" "LOW" "MEDIUM (recommended)" "HIGH" "CRITICAL (only showstoppers)")
 case "$SEV_CHOICE" in
-  1) SEVERITY="INFO"     ;;
-  2) SEVERITY="LOW"      ;;
-  3) SEVERITY="MEDIUM"   ;;
-  4) SEVERITY="HIGH"     ;;
-  5) SEVERITY="CRITICAL" ;;
-  *) SEVERITY="INFO"     ;;
+  1) SEVERITY="INFO" ;; 2) SEVERITY="LOW" ;; 3) SEVERITY="MEDIUM" ;;
+  4) SEVERITY="HIGH" ;; 5) SEVERITY="CRITICAL" ;; *) SEVERITY="INFO" ;;
 esac
 
 echo
-ENABLE_EXTERNAL="false"
-EXTERNAL_TARGET=""
-if confirm "Enable external scan (ports, SSL, headers, DNS) against a public hostname?"; then
+ENABLE_EXTERNAL="false"; EXTERNAL_TARGET=""
+if confirm "Enable external scan (ports, SSL, headers, DNS)?"; then
   ENABLE_EXTERNAL="true"
-  EXTERNAL_TARGET=$(ask "Hostname or IP to scan externally (e.g. api.example.com)")
+  EXTERNAL_TARGET=$(ask "Hostname or IP to scan (e.g. api.example.com)")
 fi
 
 echo
-SCAN_MODULES=$(ask "Modules to run (comma-separated, or Enter for all)" "")
-
+SCAN_MODULES=$(ask "Modules to run (comma-separated, Enter = all)" "")
 echo
 ACCOUNT_CONTEXT=$(ask "Environment context for AI (e.g. 'Production fintech, PCI DSS')" "")
 
-# ── Step 6: Scheduler ─────────────────────────────────────────────────────────
-section "6 — Scheduled scans (optional)"
+# ── AWS Step 7: Scheduler ─────────────────────────────────────────────────────
+section "7 — Scheduled scans (optional)"
 
-echo -e "  StratusAI can run automatically on a schedule via EventBridge."
-echo
-
-ENABLE_SCHEDULER="false"
-SCHEDULE_EXPR="rate(7 days)"
-NOTIFICATION_EMAIL=""
-
-if confirm "Enable scheduled automatic scans?"; then
+ENABLE_SCHEDULER="false"; SCHEDULE_EXPR="rate(7 days)"; NOTIFICATION_EMAIL=""
+if confirm "Enable automatic scheduled scans via EventBridge?"; then
   ENABLE_SCHEDULER="true"
   echo
-  echo -e "  Schedule examples:"
-  echo -e "    rate(7 days)          — weekly"
-  echo -e "    rate(1 day)           — daily"
-  echo -e "    cron(0 8 * * ? *)     — every day at 08:00 UTC"
-  echo -e "    cron(0 8 ? * MON *)   — every Monday at 08:00 UTC"
-  echo
+  echo -e "  Examples:  rate(7 days)   rate(1 day)   cron(0 8 * * ? *)"
   SCHEDULE_EXPR=$(ask "Schedule expression" "rate(7 days)")
-  NOTIFICATION_EMAIL=$(ask "Email for scan completion alerts (leave blank to skip)" "")
+  NOTIFICATION_EMAIL=$(ask "Alert email on scan completion (leave blank to skip)" "")
 fi
 
-# ── Step 7: Deployment options ────────────────────────────────────────────────
-section "7 — Deployment options"
+# ── AWS Step 8: Run on deploy? ────────────────────────────────────────────────
+section "8 — Post-deploy"
 
 RUN_AFTER_DEPLOY=false
-if confirm "Trigger a scan immediately after deployment?"; then
-  RUN_AFTER_DEPLOY=true
-fi
+confirm "Trigger a scan immediately after deployment?" && RUN_AFTER_DEPLOY=true
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# ── AWS Summary ───────────────────────────────────────────────────────────────
+echo; hr
+echo -e "  ${BOLD}AWS Deployment Summary${RESET}"; hr; echo
+printf "  %-28s %s\n" "Account:"           "$ACCOUNT_ID"
+printf "  %-28s %s\n" "Region:"            "$AWS_REGION"
+printf "  %-28s %s\n" "Name prefix:"       "$NAME_PREFIX"
+printf "  %-28s %s\n" "Environment:"       "$ENVIRONMENT"
 echo
-hr
-echo -e "  ${BOLD}Configuration Summary${RESET}"
-hr
+[[ -n "$VPC_ID" ]] && printf "  %-28s %s\n" "VPC:" "$VPC_ID" \
+                   && printf "  %-28s %s\n" "Subnets:" "$SUBNET_IDS" \
+                   || printf "  %-28s %s\n" "VPC:" "Default (auto-discovered)"
 echo
-printf "  %-26s %s\n" "AWS Account:"        "$ACCOUNT_ID"
-printf "  %-26s %s\n" "Region:"             "$AWS_REGION"
-printf "  %-26s %s\n" "Name prefix:"        "$NAME_PREFIX"
-printf "  %-26s %s\n" "Environment:"        "$ENVIRONMENT"
+printf "  %-28s %s\n" "AI enabled:"        "$ENABLE_AI"
+[[ "$ENABLE_AI" == "true" ]] && printf "  %-28s %s\n" "AI model:" "$AI_MODEL"
+[[ -n "$API_KEY" ]]          && printf "  %-28s %s\n" "API key:" "${API_KEY:0:10}..."
 echo
-if [[ -n "$VPC_ID" ]]; then
-  printf "  %-26s %s\n" "VPC:"              "$VPC_ID"
-  printf "  %-26s %s\n" "Subnets:"          "$SUBNET_IDS"
-else
-  printf "  %-26s %s\n" "VPC:"              "New VPC (created by Terraform)"
-fi
+printf "  %-28s %s\n" "Scan regions:"      "$SCAN_REGIONS"
+printf "  %-28s %s\n" "Severity filter:"   "$SEVERITY"
+printf "  %-28s %s\n" "External scan:"     "$ENABLE_EXTERNAL"
+[[ -n "$EXTERNAL_TARGET" ]] && printf "  %-28s %s\n" "External target:" "$EXTERNAL_TARGET"
+[[ -n "$SCAN_MODULES" ]]    && printf "  %-28s %s\n" "Modules:" "$SCAN_MODULES"
+[[ -n "$ACCOUNT_CONTEXT" ]] && printf "  %-28s %s\n" "AI context:" "$ACCOUNT_CONTEXT"
 echo
-printf "  %-26s %s\n" "AI enabled:"         "$ENABLE_AI"
-[[ "$ENABLE_AI" == "true" ]] && printf "  %-26s %s\n" "AI model:"   "$AI_MODEL"
-[[ -n "$API_KEY" ]]          && printf "  %-26s %s\n" "API key:"    "${API_KEY:0:10}..."
+printf "  %-28s %s\n" "Scheduled scans:"   "$ENABLE_SCHEDULER"
+[[ "$ENABLE_SCHEDULER" == "true" ]] && printf "  %-28s %s\n" "Schedule:" "$SCHEDULE_EXPR"
+[[ -n "$NOTIFICATION_EMAIL" ]]      && printf "  %-28s %s\n" "Alert email:" "$NOTIFICATION_EMAIL"
 echo
-printf "  %-26s %s\n" "Scan regions:"       "$SCAN_REGIONS"
-printf "  %-26s %s\n" "Severity filter:"    "$SEVERITY"
-printf "  %-26s %s\n" "External scan:"      "$ENABLE_EXTERNAL"
-[[ -n "$EXTERNAL_TARGET" ]]  && printf "  %-26s %s\n" "External target:" "$EXTERNAL_TARGET"
-[[ -n "$SCAN_MODULES" ]]     && printf "  %-26s %s\n" "Modules:"    "$SCAN_MODULES"
-[[ -n "$ACCOUNT_CONTEXT" ]]  && printf "  %-26s %s\n" "AI context:" "$ACCOUNT_CONTEXT"
-echo
-printf "  %-26s %s\n" "Scheduled scans:"    "$ENABLE_SCHEDULER"
-[[ "$ENABLE_SCHEDULER" == "true" ]] && printf "  %-26s %s\n" "Schedule:" "$SCHEDULE_EXPR"
-[[ -n "$NOTIFICATION_EMAIL" ]]      && printf "  %-26s %s\n" "Alert email:" "$NOTIFICATION_EMAIL"
-echo
-printf "  %-26s %s\n" "Run scan on deploy:" "$RUN_AFTER_DEPLOY"
-echo
-hr
-echo
+printf "  %-28s %s\n" "Run scan on deploy:" "$RUN_AFTER_DEPLOY"
+echo; hr; echo
 
-if ! confirm "Write terraform.tfvars and deploy?"; then
-  info "Deployment cancelled. Run ./deploy_wizard.sh again to restart."
-  exit 0
-fi
+confirm "Write terraform/terraform.tfvars and deploy?" || { info "Cancelled."; exit 0; }
 
-# ── Write terraform.tfvars ────────────────────────────────────────────────────
-TFVARS_FILE="./terraform/terraform.tfvars"
-echo
-info "Writing ${TFVARS_FILE}..."
+# ── Write AWS tfvars ──────────────────────────────────────────────────────────
+TFVARS="./terraform/terraform.tfvars"
+info "Writing ${TFVARS}..."
 
-cat > "$TFVARS_FILE" <<TFVARS
+cat > "$TFVARS" <<TFVARS
 # Generated by deploy_wizard.sh — $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Re-run ./deploy_wizard.sh to regenerate.
 
 aws_region   = "${AWS_REGION}"
 name_prefix  = "${NAME_PREFIX}"
@@ -361,72 +316,341 @@ environment  = "${ENVIRONMENT}"
 
 TFVARS
 
-# Networking
 if [[ -n "$VPC_ID" ]]; then
-  echo "vpc_id     = \"${VPC_ID}\"" >> "$TFVARS_FILE"
-  # Convert comma-separated to HCL list
-  HCL_SUBNETS=$(echo "$SUBNET_IDS" | sed 's/[[:space:]]//g' | sed 's/,/", "/g')
-  echo "subnet_ids = [\"${HCL_SUBNETS}\"]" >> "$TFVARS_FILE"
+  echo "vpc_id     = \"${VPC_ID}\""  >> "$TFVARS"
+  HCL_SUBNETS=$(echo "$SUBNET_IDS" | sed 's/[[:space:]]//g; s/,/", "/g')
+  echo "subnet_ids = [\"${HCL_SUBNETS}\"]" >> "$TFVARS"
 fi
 
-cat >> "$TFVARS_FILE" <<TFVARS
+cat >> "$TFVARS" <<TFVARS
 
-# AI
 enable_ai    = ${ENABLE_AI}
 claude_model = "${AI_MODEL}"
 TFVARS
+[[ -n "$API_KEY" ]] && echo "anthropic_api_key = \"${API_KEY}\"" >> "$TFVARS"
 
-if [[ -n "$API_KEY" ]]; then
-  echo "anthropic_api_key = \"${API_KEY}\"" >> "$TFVARS_FILE"
-fi
+cat >> "$TFVARS" <<TFVARS
 
-cat >> "$TFVARS_FILE" <<TFVARS
-
-# Scan
-scan_regions          = "${SCAN_REGIONS}"
-scan_severity         = "${SEVERITY}"
-enable_external_scan  = ${ENABLE_EXTERNAL}
+scan_regions         = "${SCAN_REGIONS}"
+scan_severity        = "${SEVERITY}"
+enable_external_scan = ${ENABLE_EXTERNAL}
 TFVARS
+[[ -n "$EXTERNAL_TARGET" ]] && echo "external_scan_target = \"${EXTERNAL_TARGET}\"" >> "$TFVARS"
+[[ -n "$SCAN_MODULES" ]]    && echo "scan_modules         = \"${SCAN_MODULES}\""     >> "$TFVARS"
 
-[[ -n "$EXTERNAL_TARGET" ]] && echo "external_scan_target = \"${EXTERNAL_TARGET}\"" >> "$TFVARS_FILE"
-[[ -n "$SCAN_MODULES" ]]    && echo "scan_modules         = \"${SCAN_MODULES}\""     >> "$TFVARS_FILE"
+cat >> "$TFVARS" <<TFVARS
 
-cat >> "$TFVARS_FILE" <<TFVARS
-
-# Scheduler
 enable_scheduler    = ${ENABLE_SCHEDULER}
 schedule_expression = "${SCHEDULE_EXPR}"
 TFVARS
+[[ -n "$NOTIFICATION_EMAIL" ]] && echo "notification_email = \"${NOTIFICATION_EMAIL}\"" >> "$TFVARS"
 
-[[ -n "$NOTIFICATION_EMAIL" ]] && echo "notification_email = \"${NOTIFICATION_EMAIL}\"" >> "$TFVARS_FILE"
+ok "terraform/terraform.tfvars written."
+[[ -n "$ACCOUNT_CONTEXT" ]] && \
+  { echo "export ASSESSMENT_CONTEXT=\"${ACCOUNT_CONTEXT}\"" > ./terraform/.deploy_env
+    ok "Context saved to terraform/.deploy_env"; }
 
-ok "terraform.tfvars written."
-
-# Write context to a separate env file (not in tfvars — it's a CLI arg, not a TF var)
-if [[ -n "$ACCOUNT_CONTEXT" ]]; then
-  echo "export ASSESSMENT_CONTEXT=\"${ACCOUNT_CONTEXT}\"" > ./terraform/.deploy_env
-  ok "Assessment context saved to ./terraform/.deploy_env"
-fi
-
-# ── Run deploy.sh ─────────────────────────────────────────────────────────────
+# ── Deploy ────────────────────────────────────────────────────────────────────
 echo
 DEPLOY_ARGS="--region ${AWS_REGION}"
 $RUN_AFTER_DEPLOY && DEPLOY_ARGS="${DEPLOY_ARGS} --run"
-
-info "Launching ./deploy.sh ${DEPLOY_ARGS} ..."
-echo
-hr
-
+info "Launching ./deploy.sh ${DEPLOY_ARGS}..."; echo; hr
 bash ./deploy.sh $DEPLOY_ARGS
-
-hr
-echo
-ok "Deployment wizard complete."
+hr; echo; ok "AWS deployment complete."
 echo
 echo -e "  Useful commands:"
-echo -e "    View logs:     ${CYAN}aws logs tail /aws/ecs/${NAME_PREFIX} --follow --region ${AWS_REGION}${RESET}"
+echo -e "    Logs:          ${CYAN}aws logs tail /aws/ecs/${NAME_PREFIX} --follow --region ${AWS_REGION}${RESET}"
 echo -e "    Re-deploy:     ${CYAN}./deploy.sh --build-only --region ${AWS_REGION}${RESET}"
 echo -e "    Trigger scan:  ${CYAN}./deploy.sh --run-only  --region ${AWS_REGION}${RESET}"
-echo -e "    Destroy all:   ${CYAN}./deploy.sh --destroy   --region ${AWS_REGION}${RESET}"
-echo -e "    Edit config:   ${CYAN}${TFVARS_FILE}${RESET}"
+echo -e "    Destroy:       ${CYAN}./deploy.sh --destroy   --region ${AWS_REGION}${RESET}"
 echo
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GCP DEPLOYMENT PATH
+# ═══════════════════════════════════════════════════════════════════════════════
+elif [[ "$PLATFORM" == "gcp" ]]; then
+
+# ── GCP Step 2: Authentication ────────────────────────────────────────────────
+section "2 — GCP authentication"
+
+info "Checking gcloud auth..."
+ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | head -1)
+if [[ -n "$ACTIVE_ACCOUNT" ]]; then
+  ok "Logged in as: ${ACTIVE_ACCOUNT}"
+else
+  warn "No active gcloud account found."
+  info "Running: gcloud auth login"
+  gcloud auth login
+  ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | head -1)
+  ok "Logged in as: ${ACTIVE_ACCOUNT}"
+fi
+
+echo
+info "Checking Application Default Credentials (ADC)..."
+if gcloud auth application-default print-access-token &>/dev/null; then
+  ok "ADC are configured."
+else
+  warn "ADC not configured — required for Terraform."
+  info "Running: gcloud auth application-default login"
+  gcloud auth application-default login
+fi
+
+# ── GCP Step 3: Project & region ─────────────────────────────────────────────
+section "3 — Project & region"
+
+echo -e "  Available projects:"
+gcloud projects list --format="table(projectId,name)" 2>/dev/null | head -15 || \
+  info "(could not list projects)"
+echo
+
+GCP_PROJECT=$(ask "GCP project ID to deploy INTO")
+GCP_REGION=$(ask  "GCP region" "us-central1")
+NAME_PREFIX=$(ask "Resource name prefix" "stratusai")
+ENVIRONMENT=$(ask "Environment label (prod / staging)" "prod")
+
+info "Verifying project access..."
+if gcloud projects describe "$GCP_PROJECT" &>/dev/null; then
+  ok "Project ${GCP_PROJECT} is accessible."
+else
+  err "Cannot access project '${GCP_PROJECT}'. Check the ID and your permissions."
+  exit 1
+fi
+
+# ── GCP Step 4: Scan target ───────────────────────────────────────────────────
+section "4 — What to scan"
+
+echo -e "  StratusAI will scan a GCP project."
+echo -e "  It can scan the same project it's deployed into, or a different one."
+echo
+SCAN_PROJECT_CHOICE=$(ask_choice "Scan target" "1" \
+  "Same project (${GCP_PROJECT})" \
+  "Different project")
+
+SCAN_PROJECT=""
+if [[ "$SCAN_PROJECT_CHOICE" == "2" ]]; then
+  echo
+  echo -e "  Your projects:"
+  gcloud projects list --format="value(projectId)" 2>/dev/null | \
+    while read -r p; do echo "    • $p"; done || true
+  echo
+  SCAN_PROJECT=$(ask "Project ID to scan")
+fi
+
+# ── GCP Step 5: AI ────────────────────────────────────────────────────────────
+section "5 — AI model & API key"
+
+echo -e "    1) claude-sonnet-4-6          ${CYAN}Anthropic  ~\$0.08/scan  (recommended)${RESET}"
+echo -e "    2) claude-haiku-4-5-20251001  ${CYAN}Anthropic  ~\$0.01/scan  (budget)${RESET}"
+echo -e "    3) claude-opus-4-6            ${CYAN}Anthropic  ~\$0.30/scan  (best quality)${RESET}"
+echo -e "    4) gpt-4o                     ${CYAN}OpenAI     ~\$0.10/scan${RESET}"
+echo -e "    5) gemini-2.0-flash           ${CYAN}Google     ~\$0.005/scan (cheapest)${RESET}"
+echo -e "    6) No AI                      ${CYAN}Free — raw scanner output only${RESET}"
+echo
+AI_CHOICE=$(ask_choice "Model" "1" \
+  "claude-sonnet-4-6" "claude-haiku-4-5-20251001" "claude-opus-4-6" \
+  "gpt-4o" "gemini-2.0-flash" "No AI")
+
+ENABLE_AI="true"; AI_MODEL="claude-sonnet-4-6"; API_KEY=""
+case "$AI_CHOICE" in
+  1) AI_MODEL="claude-sonnet-4-6" ;;
+  2) AI_MODEL="claude-haiku-4-5-20251001" ;;
+  3) AI_MODEL="claude-opus-4-6" ;;
+  4) AI_MODEL="gpt-4o" ;;
+  5) AI_MODEL="gemini-2.0-flash" ;;
+  6) ENABLE_AI="false" ;;
+esac
+
+if [[ "$ENABLE_AI" == "true" ]]; then
+  echo
+  case "$AI_MODEL" in
+    claude-*) ENV_KEY="${ANTHROPIC_API_KEY:-}"; KEY_PREFIX="sk-ant-" ;;
+    gpt-*)    ENV_KEY="${OPENAI_API_KEY:-}";    KEY_PREFIX="sk-" ;;
+    gemini-*) ENV_KEY="${GOOGLE_API_KEY:-}";    KEY_PREFIX="AIza" ;;
+  esac
+  if [[ -n "$ENV_KEY" ]]; then
+    ok "API key found in environment (${ENV_KEY:0:10}...)"
+    API_KEY="$ENV_KEY"
+  else
+    API_KEY=$(ask_secret "API key")
+  fi
+  [[ "$API_KEY" != ${KEY_PREFIX}* ]] && \
+    warn "Key prefix doesn't match '${KEY_PREFIX}...' — double-check."
+fi
+
+# ── GCP Step 6: Scan config ───────────────────────────────────────────────────
+section "6 — Scan configuration"
+
+echo -e "  Minimum severity filter:"
+SEV_CHOICE=$(ask_choice "Severity" "1" \
+  "INFO (everything)" "LOW" "MEDIUM (recommended)" "HIGH" "CRITICAL (only showstoppers)")
+case "$SEV_CHOICE" in
+  1) SEVERITY="INFO" ;; 2) SEVERITY="LOW" ;; 3) SEVERITY="MEDIUM" ;;
+  4) SEVERITY="HIGH" ;; 5) SEVERITY="CRITICAL" ;; *) SEVERITY="INFO" ;;
+esac
+
+echo
+ENABLE_EXTERNAL="false"; EXTERNAL_TARGET=""
+if confirm "Enable external scan (ports, SSL, headers, DNS)?"; then
+  ENABLE_EXTERNAL="true"
+  EXTERNAL_TARGET=$(ask "Hostname or IP to scan (e.g. api.example.com)")
+fi
+
+echo
+SCAN_MODULES=$(ask "Modules to run (comma-separated, Enter = all)" "")
+echo
+ACCOUNT_CONTEXT=$(ask "Environment context for AI (e.g. 'Production SaaS, GDPR scope')" "")
+
+# ── GCP Step 7: Scheduler ─────────────────────────────────────────────────────
+section "7 — Scheduled scans (optional)"
+
+ENABLE_SCHEDULER="false"; SCHEDULE_EXPR="0 8 * * 1"; NOTIFICATION_EMAIL=""
+if confirm "Enable automatic scheduled scans via Cloud Scheduler?"; then
+  ENABLE_SCHEDULER="true"
+  echo
+  echo -e "  Cron syntax (UTC). Examples:"
+  echo -e "    0 8 * * 1    — every Monday at 08:00"
+  echo -e "    0 8 * * *    — every day at 08:00"
+  echo -e "    0 */6 * * *  — every 6 hours"
+  SCHEDULE_EXPR=$(ask "Cron expression" "0 8 * * 1")
+  NOTIFICATION_EMAIL=$(ask "Alert email (leave blank to skip)" "")
+fi
+
+# ── GCP Step 8: Run on deploy? ────────────────────────────────────────────────
+section "8 — Post-deploy"
+
+RUN_AFTER_DEPLOY=false
+confirm "Trigger a scan immediately after deployment?" && RUN_AFTER_DEPLOY=true
+
+# ── GCP Summary ───────────────────────────────────────────────────────────────
+echo; hr
+echo -e "  ${BOLD}GCP Deployment Summary${RESET}"; hr; echo
+printf "  %-28s %s\n" "Deploy to project:" "$GCP_PROJECT"
+printf "  %-28s %s\n" "Scan project:"      "${SCAN_PROJECT:-$GCP_PROJECT (same)}"
+printf "  %-28s %s\n" "Region:"            "$GCP_REGION"
+printf "  %-28s %s\n" "Name prefix:"       "$NAME_PREFIX"
+printf "  %-28s %s\n" "Environment:"       "$ENVIRONMENT"
+echo
+printf "  %-28s %s\n" "AI enabled:"        "$ENABLE_AI"
+[[ "$ENABLE_AI" == "true" ]] && printf "  %-28s %s\n" "AI model:" "$AI_MODEL"
+[[ -n "$API_KEY" ]]          && printf "  %-28s %s\n" "API key:" "${API_KEY:0:10}..."
+echo
+printf "  %-28s %s\n" "Severity filter:"   "$SEVERITY"
+printf "  %-28s %s\n" "External scan:"     "$ENABLE_EXTERNAL"
+[[ -n "$EXTERNAL_TARGET" ]] && printf "  %-28s %s\n" "External target:" "$EXTERNAL_TARGET"
+[[ -n "$SCAN_MODULES" ]]    && printf "  %-28s %s\n" "Modules:" "$SCAN_MODULES"
+[[ -n "$ACCOUNT_CONTEXT" ]] && printf "  %-28s %s\n" "AI context:" "$ACCOUNT_CONTEXT"
+echo
+printf "  %-28s %s\n" "Scheduled scans:"   "$ENABLE_SCHEDULER"
+[[ "$ENABLE_SCHEDULER" == "true" ]] && printf "  %-28s %s\n" "Schedule:" "$SCHEDULE_EXPR"
+[[ -n "$NOTIFICATION_EMAIL" ]]      && printf "  %-28s %s\n" "Alert email:" "$NOTIFICATION_EMAIL"
+echo
+printf "  %-28s %s\n" "Run scan on deploy:" "$RUN_AFTER_DEPLOY"
+echo; hr; echo
+
+confirm "Write terraform/gcp/terraform.tfvars and deploy?" || { info "Cancelled."; exit 0; }
+
+# ── Write GCP tfvars ──────────────────────────────────────────────────────────
+TFVARS="./terraform/gcp/terraform.tfvars"
+info "Writing ${TFVARS}..."
+
+cat > "$TFVARS" <<TFVARS
+# Generated by deploy_wizard.sh — $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+gcp_project  = "${GCP_PROJECT}"
+gcp_region   = "${GCP_REGION}"
+name_prefix  = "${NAME_PREFIX}"
+environment  = "${ENVIRONMENT}"
+TFVARS
+
+[[ -n "$SCAN_PROJECT" ]] && echo "scan_project = \"${SCAN_PROJECT}\"" >> "$TFVARS"
+
+cat >> "$TFVARS" <<TFVARS
+
+enable_ai = ${ENABLE_AI}
+ai_model  = "${AI_MODEL}"
+TFVARS
+[[ -n "$API_KEY" ]] && echo "api_key   = \"${API_KEY}\"" >> "$TFVARS"
+
+cat >> "$TFVARS" <<TFVARS
+
+scan_severity        = "${SEVERITY}"
+enable_external_scan = ${ENABLE_EXTERNAL}
+TFVARS
+[[ -n "$EXTERNAL_TARGET" ]] && echo "external_scan_target = \"${EXTERNAL_TARGET}\"" >> "$TFVARS"
+[[ -n "$SCAN_MODULES" ]]    && echo "scan_modules         = \"${SCAN_MODULES}\""     >> "$TFVARS"
+
+cat >> "$TFVARS" <<TFVARS
+
+enable_scheduler    = ${ENABLE_SCHEDULER}
+schedule_expression = "${SCHEDULE_EXPR}"
+TFVARS
+[[ -n "$NOTIFICATION_EMAIL" ]] && echo "notification_email = \"${NOTIFICATION_EMAIL}\"" >> "$TFVARS"
+
+ok "terraform/gcp/terraform.tfvars written."
+[[ -n "$ACCOUNT_CONTEXT" ]] && \
+  { echo "export ASSESSMENT_CONTEXT=\"${ACCOUNT_CONTEXT}\"" > ./terraform/gcp/.deploy_env
+    ok "Context saved to terraform/gcp/.deploy_env"; }
+
+# ── Terraform init + apply ────────────────────────────────────────────────────
+echo
+info "Initializing Terraform..."
+terraform -chdir=./terraform/gcp init -upgrade -input=false
+
+echo
+info "Planning..."
+terraform -chdir=./terraform/gcp plan -input=false -out=/tmp/stratusai-gcp.tfplan
+
+echo
+info "Applying..."
+terraform -chdir=./terraform/gcp apply -input=false /tmp/stratusai-gcp.tfplan
+ok "Infrastructure deployed."
+
+# ── Build + push image ────────────────────────────────────────────────────────
+REGISTRY="${GCP_REGION}-docker.pkg.dev"
+IMAGE_PATH="${REGISTRY}/${GCP_PROJECT}/${NAME_PREFIX}/${NAME_PREFIX}:latest"
+
+echo
+info "Configuring Docker auth for Artifact Registry..."
+gcloud auth configure-docker "$REGISTRY" --quiet
+
+echo
+info "Building Docker image..."
+docker build -t stratusai:build .
+
+echo
+info "Tagging + pushing to Artifact Registry..."
+docker tag stratusai:build "$IMAGE_PATH"
+docker push "$IMAGE_PATH"
+ok "Image pushed: ${IMAGE_PATH}"
+
+# ── Get outputs ───────────────────────────────────────────────────────────────
+JOB_NAME=$(terraform -chdir=./terraform/gcp output -raw cloud_run_job_name 2>/dev/null || echo "${NAME_PREFIX}-scan")
+BUCKET=$(terraform -chdir=./terraform/gcp output -raw reports_bucket 2>/dev/null || echo "")
+RUN_CMD=$(terraform -chdir=./terraform/gcp output -raw run_command 2>/dev/null || \
+  echo "gcloud run jobs execute ${JOB_NAME} --region ${GCP_REGION} --project ${GCP_PROJECT}")
+
+# ── Trigger scan ──────────────────────────────────────────────────────────────
+if $RUN_AFTER_DEPLOY; then
+  echo
+  info "Triggering Cloud Run Job..."
+  gcloud run jobs execute "$JOB_NAME" \
+    --region "$GCP_REGION" \
+    --project "$GCP_PROJECT" \
+    --wait
+  ok "Scan completed."
+fi
+
+hr; echo; ok "GCP deployment complete."
+echo
+echo -e "  Resources:"
+echo -e "    Image:    ${CYAN}${IMAGE_PATH}${RESET}"
+[[ -n "$BUCKET" ]] && echo -e "    Reports:  ${CYAN}gs://${BUCKET}/reports/${RESET}"
+echo
+echo -e "  Useful commands:"
+echo -e "    Trigger scan:  ${CYAN}${RUN_CMD}${RESET}"
+echo -e "    View logs:     ${CYAN}gcloud logging read 'resource.type=cloud_run_job AND resource.labels.job_name=${JOB_NAME}' --project ${GCP_PROJECT} --limit 50${RESET}"
+echo -e "    Re-deploy:     ${CYAN}docker build -t ${IMAGE_PATH} . && docker push ${IMAGE_PATH}${RESET}"
+echo -e "    Destroy:       ${CYAN}terraform -chdir=./terraform/gcp destroy${RESET}"
+echo
+
+fi  # end GCP path
