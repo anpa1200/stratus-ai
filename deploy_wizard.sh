@@ -598,7 +598,7 @@ ok "terraform/gcp/terraform.tfvars written."
   { echo "export ASSESSMENT_CONTEXT=\"${ACCOUNT_CONTEXT}\"" > ./terraform/gcp/.deploy_env
     ok "Context saved to terraform/gcp/.deploy_env"; }
 
-# ── Terraform init + apply ────────────────────────────────────────────────────
+# ── Terraform init ────────────────────────────────────────────────────────────
 echo
 info "Initializing Terraform..."
 terraform -chdir=./terraform/gcp init -upgrade -input=false
@@ -607,10 +607,15 @@ echo
 info "Planning..."
 terraform -chdir=./terraform/gcp plan -input=false -out=/tmp/stratusai-gcp.tfplan
 
+# ── Phase 1: Enable APIs + create Artifact Registry only ─────────────────────
+# Cloud Run Job creation requires the image to already exist in the registry.
+# So we create the registry first, push the image, then apply everything else.
 echo
-info "Applying..."
-terraform -chdir=./terraform/gcp apply -input=false /tmp/stratusai-gcp.tfplan
-ok "Infrastructure deployed."
+info "Phase 1/2 — Enabling APIs and creating Artifact Registry..."
+terraform -chdir=./terraform/gcp apply -input=false -auto-approve \
+  -target=google_project_service.apis \
+  -target=google_artifact_registry_repository.images
+ok "Registry ready."
 
 # ── Build + push image ────────────────────────────────────────────────────────
 REGISTRY="${GCP_REGION}-docker.pkg.dev"
@@ -629,6 +634,12 @@ info "Tagging + pushing to Artifact Registry..."
 docker tag stratusai:build "$IMAGE_PATH"
 docker push "$IMAGE_PATH"
 ok "Image pushed: ${IMAGE_PATH}"
+
+# ── Phase 2: Apply remaining infrastructure (Cloud Run Job, IAM, GCS, etc.) ──
+echo
+info "Phase 2/2 — Deploying remaining infrastructure..."
+terraform -chdir=./terraform/gcp apply -input=false /tmp/stratusai-gcp.tfplan
+ok "Infrastructure deployed."
 
 # ── Get outputs ───────────────────────────────────────────────────────────────
 JOB_NAME=$(terraform -chdir=./terraform/gcp output -raw cloud_run_job_name 2>/dev/null || echo "${NAME_PREFIX}-scan")
