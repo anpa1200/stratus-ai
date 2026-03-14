@@ -1,277 +1,226 @@
 # StratusAI
 
-**AI-powered cloud security assessment tool — runs entirely inside Docker.**
+**AI-powered multi-cloud security scanner for AWS and GCP — scan, analyze, deploy from a single wizard.**
 
-StratusAI scans your cloud environment for misconfigurations and vulnerabilities, feeds the findings to Claude, and produces a prioritized security report with attack chain analysis — from a single command.
+StratusAI scans your cloud environment for misconfigurations and vulnerabilities, feeds findings to an LLM of your choice (Claude, GPT-4o, or Gemini), and produces a prioritized security report with attack chain analysis — all from one interactive wizard.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-./run.sh --provider aws --mode internal
+./wizard.sh   # option 1: run a scan  |  option 2: deploy to AWS or GCP
 ```
 
-> Supports **AWS** (full), GCP/Azure (coming soon), and **external** endpoint scanning for any target.
+> **Full engineering walkthrough:** [StratusAI: I Built an AI-Powered Cloud Security Scanner for AWS and GCP — Here's Everything](https://medium.com/@1200km/stratusai-i-built-an-ai-powered-cloud-security-scanner-for-aws-and-gcp-heres-everything-89c6702d3b84)
 
 ---
 
-## Two Assessment Modes
+## What It Does
+
+- **9 AWS scanner modules** — IAM, S3, EC2, CloudTrail, RDS, Lambda, KMS, Secrets Manager, EKS
+- **7 GCP scanner modules** — IAM, Compute Engine, Cloud Storage, Cloud Functions, Cloud Run, Secret Manager, Cloud Logging
+- **4 external scan modules** — port scan (nmap), SSL/TLS, HTTP security headers, DNS/DMARC/SPF/DKIM
+- **Multi-LLM AI analysis** — Claude (Anthropic), GPT-4o/o1/o3 (OpenAI), Gemini 2.0/1.5 (Google)
+- **Attack chain synthesis** — identifies how multiple findings chain into real exploitation paths
+- **HTML + Markdown + JSON reports** — interactive HTML with live search and severity filtering
+- **Serverless deployment** — AWS ECS Fargate or GCP Cloud Run Job with optional scheduled scans
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    DOCKER CONTAINER                  │
-│                                                      │
-│  ┌─────────────────┐    ┌────────────────────────┐   │
-│  │  INTERNAL MODE  │    │    EXTERNAL MODE       │   │
-│  │                 │    │                        │   │
-│  │  AWS/GCP/Azure  │    │  Any public target     │   │
-│  │  SDK calls      │    │  nmap port scan        │   │
-│  │  (read-only)    │    │  TLS/SSL analysis      │   │
-│  │                 │    │  HTTP security headers │   │
-│  │  IAM, S3, EC2   │    │  DNS/DNSSEC/SPF/DMARC  │   │
-│  │  RDS, VPC,      │    │                        │   │
-│  │  CloudTrail...  │    │                        │   │
-│  └────────┬────────┘    └───────────┬────────────┘   │
-│           └────────────┬────────────┘                │
-│                        ▼                             │
-│              AI Analysis (Claude)                    │
-│              Attack Chains + Priorities              │
-│                        ▼                             │
-│              HTML + Markdown Reports                 │
-└──────────────────────────────────────────────────────┘
+                      ┌──────────────────────────────────────────┐
+                      │              StratusAI                   │
+                      │                                          │
+AWS credentials ────► │  ┌──────────┐   ┌───────────────────┐   │
+GCP credentials ────► │  │ Scanners │   │    AI Layer       │   │
+(no creds)      ────► │  │ AWS  (9) │──►│ Preprocessor      │──►│──► HTML report
+                      │  │ GCP  (7) │   │ Per-module LLM    │   │    Markdown
+                      │  │ Ext. (4) │   │ Synthesis         │   │    GCS/S3 upload
+                      │  └──────────┘   └───────────────────┘   │
+                      │  LLM Router: claude-* / gpt-* / gemini-* │
+                      └──────────────────────────────────────────┘
 ```
-
-**Internal mode** — uses cloud provider credentials (AWS keys, IAM role, GCP service account) to read your account's configuration via SDK. Finds IAM misconfigurations, public S3 buckets, insecure security groups, unencrypted databases, disabled logging, etc.
-
-**External mode** — scans public endpoints from the outside. No cloud credentials needed. Finds open ports, TLS/certificate issues, missing HTTP security headers, DNS misconfigurations, email spoofing exposure.
-
-**Both** — run everything at once (default).
-
----
-
-## Requirements
-
-- Docker (any recent version)
-- Linux, macOS, or WSL2
-- [Anthropic API key](https://console.anthropic.com/) — ~$0.05–0.20 per scan
-- Cloud credentials (for internal mode):
-  - **AWS**: access key + secret, or IAM role, or `~/.aws/credentials` profile
-  - **GCP**: service account JSON (coming soon)
-  - **Azure**: service principal (coming soon)
 
 ---
 
 ## Quick Start
 
-**1. Install Docker:**
+### Interactive wizard (recommended)
+
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER && newgrp docker
+git clone https://github.com/anpa1200/stratus-ai
+cd stratus-ai
+chmod +x wizard.sh
+./wizard.sh
 ```
 
-**2. Clone and run:**
-```bash
-git clone https://github.com/anpa1200/StratusAI.git
-cd StratusAI
+The wizard opens with a mode selector:
 
+```
+  Step 0 — What would you like to do?
+    1)  Run a scan now        — assess AWS / GCP / external target (local or Docker)
+    2)  Deploy infrastructure — set up Cloud Run Job (GCP) or ECS Fargate (AWS) + scheduler
+```
+
+**Scan path (7 steps):** execution mode → cloud provider → scan mode → credentials → AI model → options → review & launch → clickable report links
+
+**Deploy path (9 steps):** platform → dependencies → auth → project/settings → scan target → AI model → scan config → scheduler → post-deploy → terraform apply
+
+For GCP, the wizard lists all accessible projects by number — no need to type project IDs.
+
+### CLI directly
+
+```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# AWS internal scan
-export AWS_ACCESS_KEY_ID=AKIA...
+# AWS
+export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
-./run.sh --provider aws --mode internal
+python -m assessment.cli --provider aws --mode both --target your-domain.com
 
-# External endpoint scan (no cloud creds needed)
-./run.sh --mode external --target company.com
+# GCP
+gcloud auth application-default login
+python -m assessment.cli --provider gcp --project my-gcp-project
 
-# Full scan: AWS internal + external endpoint
-./run.sh --provider aws --target company.com --mode both
+# External only (no cloud credentials needed)
+python -m assessment.cli --provider aws --mode external --target api.company.com
 ```
-
-Reports are written to `./output/`.
 
 ---
 
-## Usage
+## Installation
 
+**Docker (recommended — no local dependencies):**
 ```bash
-# AWS full internal assessment (all 5 modules)
-./run.sh --provider aws --mode internal
-
-# AWS with named profile from ~/.aws/credentials
-./run.sh --provider aws --mode internal --profile production
-
-# Specific region
-./run.sh --provider aws --mode internal --region eu-west-1
-
-# Scan all default regions (us-east-1, us-west-2, eu-west-1)
-./run.sh --provider aws --mode internal --all-regions
-
-# External scan only (no cloud credentials needed)
-./run.sh --mode external --target api.company.com
-
-# Both internal + external
-./run.sh --provider aws --mode both --target company.com
-
-# Specific modules only
-./run.sh --provider aws --mode internal --modules iam,s3
-
-# Skip a module
-./run.sh --provider aws --mode internal --skip rds
-
-# No AI — raw scanner output as JSON (no API calls)
-./run.sh --provider aws --mode internal --no-ai
-
-# Show only HIGH and CRITICAL findings
-./run.sh --provider aws --mode internal --severity HIGH
-
-# Use Claude Opus for deeper analysis
-./run.sh --provider aws --mode internal --model claude-opus-4-6
-
-# Verbose output (preprocessor stats, AI timing)
-./run.sh --provider aws --mode internal --verbose
+docker build -t stratus-ai .
+# wizard.sh handles docker run automatically
 ```
 
-### Docker Compose
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-... \
-AWS_ACCESS_KEY_ID=AKIA... \
-AWS_SECRET_ACCESS_KEY=... \
-docker compose run assessment --provider aws --mode internal
-```
-
-### Direct CLI (development — no Docker)
-
+**Local Python:**
 ```bash
 pip install -r requirements.txt
-AWS_DEFAULT_REGION=us-east-1 python3 -m assessment.cli --provider aws --mode internal --no-ai
+# External scan also needs: apt-get install nmap
 ```
+
+---
+
+## Supported AI Models
+
+| Model | Provider | ~Cost/scan |
+|---|---|---|
+| `claude-sonnet-4-6` | Anthropic | ~$0.06 |
+| `claude-haiku-4-5-20251001` | Anthropic | ~$0.01 |
+| `claude-opus-4-6` | Anthropic | ~$0.30 |
+| `gpt-4o` | OpenAI | ~$0.06 |
+| `gpt-4o-mini` | OpenAI | ~$0.01 |
+| `gemini-2.0-flash` | Google | ~$0.01 |
+| `gemini-1.5-pro` | Google | ~$0.05 |
+
+Low-signal modules (DNS, SSL, KMS, Cloud Logging) are automatically routed to cheaper models — saving 30–50% with no loss of quality.
 
 ---
 
 ## AWS Scanner Modules
 
 | Module | What it checks |
-|--------|---------------|
-| `iam` | Root account MFA, users without MFA, stale access keys (>90d), password policy, AdministratorAccess attachments, wildcard-trust roles |
-| `s3` | Public buckets (ACL + bucket policy), account-level public access block, encryption at rest, versioning, access logging |
-| `ec2` | Security groups open to 0.0.0.0/0 on sensitive ports, IMDSv2 enforcement, unencrypted EBS volumes, public snapshots, VPC flow logs |
-| `cloudtrail` | CloudTrail enabled/multi-region/log validation, GuardDuty status, Security Hub findings, AWS Config recording, IAM Access Analyzer |
-| `rds` | Publicly accessible instances, unencrypted storage, auto backups, deletion protection, IAM auth, insecure parameter groups |
+|---|---|
+| `iam` | Root MFA, users without MFA, stale access keys (>90d), password policy, AdministratorAccess, wildcard-trust roles |
+| `s3` | Public buckets (ACL + policy), account-level public access block, encryption, versioning, access logging |
+| `ec2` | Security groups open to 0.0.0.0/0, IMDSv1/v2, unencrypted EBS, public snapshots, VPC flow logs |
+| `cloudtrail` | Multi-region trails, log validation, GuardDuty, Security Hub, AWS Config, IAM Access Analyzer |
+| `rds` | Public instances, unencrypted storage, backups, deletion protection, IAM auth |
+| `lambda` | Deprecated runtimes, public function URLs, unencrypted env vars, no VPC placement |
+| `kms` | CMK rotation, public key policies |
+| `secretsmanager` | Rotation status, KMS usage, public resource policies |
+| `eks` | API endpoint public access, audit logging, secrets encryption, deprecated K8s versions |
+
+## GCP Scanner Modules
+
+| Module | What it checks |
+|---|---|
+| `iam` | `roles/owner` / `roles/editor` bindings, `allUsers` members, stale service account keys (>90d) |
+| `compute` | OS Login disabled, serial port enabled, default SA with editor scope, open firewall rules |
+| `storage` | Public buckets (`allUsers`), uniform access, versioning, CMEK, access logging |
+| `cloudfunctions` | Public ingress, unauthenticated invocation, deprecated runtimes |
+| `cloudrun` | Public access, unauthenticated invocation, minimal permissions |
+| `secretmanager` | Rotation policy, overly-broad IAM bindings, stale secret versions |
+| `logging` | Data Access audit logs disabled, no export sink, missing Admin Activity log capture |
 
 ## External Scanner Modules
 
 | Module | What it checks |
-|--------|---------------|
-| `ports` | Open TCP ports (21 common ports via nmap), service identification |
-| `ssl` | Certificate validity/expiry, TLS version (flags TLS 1.0/1.1), weak ciphers, HSTS |
-| `http_headers` | Missing security headers (CSP, HSTS, X-Frame-Options, etc.), HTTP→HTTPS redirect, cookie security flags, version disclosure |
-| `dns` | Zone transfer vulnerability, DNSSEC, SPF/DMARC/DKIM email security |
+|---|---|
+| `ports` | Open TCP ports via nmap, service identification |
+| `ssl` | Certificate validity/expiry, TLS 1.0/1.1, weak ciphers, HSTS |
+| `http_headers` | Missing CSP/HSTS/X-Frame-Options, HTTP→HTTPS redirect, cookie flags, version disclosure |
+| `dns` | Zone transfer, DNSSEC, SPF/DMARC/DKIM email security |
 
 ---
 
-## The AI Analysis
+## Deployment
 
-**Pass 1 — Per-module:** Each module's output goes through a preprocessor that drops low-signal data (e.g. compliant IAM users, correctly configured buckets) before sending to Claude. This reduces prompt size 60–90%, cuts cost, and eliminates token limit errors.
+### AWS — ECS Fargate
 
-**Pass 2 — Synthesis:** All module findings are combined in a single prompt asking Claude to identify:
-- **Attack chains** — how multiple findings combine into real exploitation paths on *your specific account*
-- **Top 10 priorities** — ranked by actual exploitability, not just severity label
-- **Overall risk rating** — CRITICAL / HIGH / MEDIUM / LOW with justification
-- **Executive summary** — non-technical prose for a CISO or account owner
-
----
-
-## Required AWS Permissions
-
-For a read-only assessment, attach this policy to your IAM user/role:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "iam:Get*", "iam:List*", "iam:GenerateCredentialReport",
-        "s3:GetBucketAcl", "s3:GetBucketLogging", "s3:GetBucketPolicy",
-        "s3:GetBucketVersioning", "s3:GetBucketEncryption",
-        "s3:GetPublicAccessBlock", "s3:ListAllMyBuckets",
-        "ec2:Describe*", "ec2:GetEbsEncryptionByDefault",
-        "rds:Describe*",
-        "cloudtrail:DescribeTrails", "cloudtrail:GetTrailStatus",
-        "guardduty:ListDetectors", "guardduty:GetDetector", "guardduty:ListFindings",
-        "securityhub:GetFindings", "securityhub:DescribeHub",
-        "config:DescribeConfigurationRecorders",
-        "config:DescribeConfigurationRecorderStatus",
-        "access-analyzer:ListAnalyzers", "access-analyzer:ListFindings",
-        "sts:GetCallerIdentity"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
+```bash
+./wizard.sh   # option 2 → AWS
+# or manually:
+cd terraform && cp terraform.tfvars.example terraform.tfvars
+vim terraform.tfvars
+terraform init && terraform apply
+./deploy.sh
 ```
+
+Creates: ECR repository, S3 reports bucket, SSM Parameter for API key, IAM roles, ECS cluster, EventBridge Scheduler.
+
+### GCP — Cloud Run Job
+
+```bash
+./wizard.sh   # option 2 → GCP
+```
+
+The wizard handles the two-phase deploy automatically (Artifact Registry must exist before the image can be pushed, which must exist before Cloud Run Job can be created).
+
+Creates: Artifact Registry, GCS reports bucket, Secret Manager secret, Cloud Run Job, Cloud Scheduler.
 
 ---
 
 ## Project Structure
 
 ```
-StratusAI/
-├── Dockerfile
-├── docker-compose.yml
-├── run.sh                          # Host-side launcher with consent prompt
-├── requirements.txt
-└── assessment/
-    ├── cli.py                      # Click CLI — entry point, orchestrates all stages
-    ├── config.py                   # Thresholds, sensitive ports, IAM policy list
-    ├── models.py                   # Finding, ModuleResult, AttackChain, Report dataclasses
-    ├── runner.py                   # Stage 1 — parallel scanner execution
-    ├── scanners/
-    │   ├── base.py                 # Abstract BaseScanner with error isolation + timing
-    │   ├── aws/
-    │   │   ├── iam.py              # Root MFA, users, access keys, policies, roles
-    │   │   ├── s3.py               # Public buckets, encryption, versioning, logging
-    │   │   ├── ec2.py              # Security groups, instances, IMDSv2, EBS, VPCs
-    │   │   ├── cloudtrail.py       # CloudTrail, GuardDuty, Security Hub, Config, Analyzer
-    │   │   └── rds.py              # RDS instances, snapshots, parameter groups
-    │   └── external/
-    │       ├── port_scan.py        # nmap TCP port scan
-    │       ├── ssl_scan.py         # TLS version, certificate validity, weak ciphers
-    │       ├── http_headers.py     # HTTP security headers, cookie flags
-    │       └── dns_scan.py         # Zone transfer, DNSSEC, SPF/DMARC/DKIM
-    ├── ai/
-    │   ├── client.py               # Anthropic SDK wrapper, retry + billing error handling
-    │   ├── preprocessor.py         # Per-module data filter (60–90% size reduction)
-    │   ├── prompts.py              # All prompt templates
-    │   └── analyzer.py             # Stage 2 — sequential analysis + synthesis
-    └── reports/
-        ├── html.py                 # Self-contained dark-theme HTML (no CDN)
-        └── markdown.py             # Markdown report generator
+cloud_audit/
+├── assessment/
+│   ├── cli.py                    # Click CLI entrypoint
+│   ├── scanners/
+│   │   ├── aws/                  # 9 AWS scanner modules
+│   │   ├── gcp/                  # 7 GCP scanner modules
+│   │   └── external/             # 4 external scanner modules
+│   ├── ai/
+│   │   ├── client.py             # LLM router: Anthropic / OpenAI / Google
+│   │   ├── analyzer.py           # Per-module analysis + synthesis
+│   │   └── preprocessor.py       # Smart data reduction (80%+ token savings)
+│   └── reports/
+│       ├── html.py               # Self-contained interactive HTML
+│       └── markdown.py           # Markdown for git/docs/JIRA
+├── tests/                        # 125 tests, zero cloud calls (moto + mocks)
+├── terraform/                    # AWS ECS Fargate deployment
+│   └── gcp/                      # GCP Cloud Run Job deployment
+├── Dockerfile                    # Ubuntu 24.04 + Python + gcloud CLI + nmap
+├── deploy.sh                     # AWS build-push-deploy helper
+└── wizard.sh                     # Unified wizard: scan OR deploy
 ```
 
 ---
 
-## Error Handling
+## Testing
 
-| Error | Behavior |
-|-------|----------|
-| Scanner fails (permission denied, API error) | Records error in report, continues other modules |
-| AWS credential missing/expired | Fails fast with actionable message |
-| API rate limit (429) | Exponential backoff: 15s → 30s → 60s → 120s, up to 4 retries |
-| Insufficient Anthropic credits (400) | Fails immediately with actionable message, suggests `--no-ai` |
-| JSON decode error in AI response | Retries up to 4 times, records empty findings on final failure |
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+# 125 passed — zero real cloud API calls, runs in ~11 seconds
+```
 
 ---
 
 ## Security Notes
 
-- All AWS API calls are **read-only**. No resources are created, modified, or deleted.
-- The only writable path is `./output/` on your host.
-- Scan data is sent to the Anthropic API for AI analysis. Use `--no-ai` for air-gapped or regulated environments.
-- Reports contain detailed cloud configuration — treat them like secrets. Don't commit to public repos.
+- All cloud API calls are **read-only**. No resources are created, modified, or deleted.
+- Scan data is sent to your chosen LLM API. Use `--no-ai` for air-gapped environments.
+- Reports contain detailed cloud configuration — treat them like secrets.
 - **Authorized use only** — run this on accounts you own or have explicit permission to assess.
 
 ---
