@@ -3,7 +3,7 @@ locals {
   image_name     = "${var.gcp_region}-docker.pkg.dev/${var.gcp_project}/${var.name_prefix}/${var.name_prefix}"
   full_image     = "${local.image_name}:${var.image_tag}"
 
-  # Build CLI args for the Cloud Run Job container command
+  # CLI args passed as container args (not command — command overrides ENTRYPOINT)
   cli_args = concat(
     ["--provider", "gcp", "--project", local.target_project],
     var.enable_ai ? ["--model", var.ai_model] : ["--no-ai"],
@@ -11,6 +11,14 @@ locals {
     var.scan_modules != "" ? ["--modules", var.scan_modules] : [],
     var.enable_external_scan && var.external_scan_target != "" ? ["--mode", "both", "--target", var.external_scan_target] : ["--mode", "internal"],
     ["--output-dir", "/tmp/output"]
+  )
+
+  # Map model name to the correct API key environment variable name
+  api_key_env_name = (
+    can(regex("^claude-", var.ai_model))         ? "ANTHROPIC_API_KEY" :
+    can(regex("^(gpt-|o1|o3|o4)", var.ai_model)) ? "OPENAI_API_KEY"    :
+    can(regex("^gemini-", var.ai_model))          ? "GOOGLE_API_KEY"    :
+    "ANTHROPIC_API_KEY"
   )
 }
 
@@ -138,8 +146,10 @@ resource "google_cloud_run_v2_job" "scanner" {
       timeout = "3600s"  # 1 hour max
 
       containers {
-        image   = local.full_image
-        command = local.cli_args
+        image = local.full_image
+        # args passes CLI flags to the ENTRYPOINT (start.sh → python -m assessment.cli).
+        # Do NOT use 'command' here — that overrides the entrypoint itself.
+        args  = local.cli_args
 
         resources {
           limits = {
@@ -148,11 +158,11 @@ resource "google_cloud_run_v2_job" "scanner" {
           }
         }
 
-        # Inject API key from Secret Manager
+        # Inject API key from Secret Manager under the correct env var name for the chosen model
         dynamic "env" {
           for_each = var.enable_ai && var.api_key != "" ? [1] : []
           content {
-            name = "ANTHROPIC_API_KEY"
+            name = local.api_key_env_name
             value_source {
               secret_key_ref {
                 secret  = google_secret_manager_secret.api_key[0].secret_id
@@ -165,6 +175,12 @@ resource "google_cloud_run_v2_job" "scanner" {
         env {
           name  = "GOOGLE_CLOUD_PROJECT"
           value = local.target_project
+        }
+
+        # start.sh uploads /tmp/output/* to this bucket after the scan completes
+        env {
+          name  = "OUTPUT_GCS_BUCKET"
+          value = google_storage_bucket.reports.name
         }
       }
     }
@@ -179,10 +195,10 @@ resource "google_cloud_run_v2_job" "scanner" {
 # ─── Cloud Scheduler ──────────────────────────────────────────────────────────
 
 resource "google_cloud_scheduler_job" "scan" {
-  count    = var.enable_scheduler ? 1 : 0
-  name     = "${var.name_prefix}-scheduled-scan"
-  region   = var.gcp_region
-  schedule = var.schedule_expression
+  count     = var.enable_scheduler ? 1 : 0
+  name      = "${var.name_prefix}-scheduled-scan"
+  region    = var.gcp_region
+  schedule  = var.schedule_expression
   time_zone = "UTC"
 
   http_target {

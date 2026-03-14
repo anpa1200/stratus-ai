@@ -30,6 +30,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY assessment/ ./assessment/
 
-RUN mkdir -p /app/output
+RUN mkdir -p /app/output /tmp/output
 
-ENTRYPOINT ["/opt/venv/bin/python", "-m", "assessment.cli"]
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+ENTRYPOINT ["/app/start.sh"]
