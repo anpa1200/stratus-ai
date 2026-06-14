@@ -5,6 +5,9 @@ Multi-cloud AI security scanner that produces AWS, GCP, and external exposure fi
 ![License](https://img.shields.io/github/license/anpa1200/stratus-ai)
 ![Last commit](https://img.shields.io/github/last-commit/anpa1200/stratus-ai)
 ![Python](https://img.shields.io/github/languages/top/anpa1200/stratus-ai)
+[![External submissions](https://img.shields.io/badge/External%20submissions-submitted-yellow)](https://github.com/cckuailong/awesome-gpt-security/pull/49)
+[![Accepted upstream](https://img.shields.io/badge/Accepted%20upstream-pending-lightgrey)](https://github.com/cckuailong/awesome-gpt-security/pull/49)
+[![Kali packaging](https://img.shields.io/badge/Kali%20packaging-prepared-blue)](docs/kali-new-tool-request.md)
 
 ## Demo
 
