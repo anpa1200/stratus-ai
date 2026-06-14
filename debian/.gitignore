@@ -1,0 +1,6 @@
+.debhelper/
+debhelper-build-stamp
+files
+stratus-ai/
+*.debhelper
+*.substvars

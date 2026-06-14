@@ -72,7 +72,14 @@ See `CITATION.cff`.
 
 ## License
 
-MIT recommended.
+[MIT](LICENSE)
+
+## Kali Linux Submission
+
+The core package supports external assessment and `--no-ai` operation without
+an AI API key. AWS, GCP, and AI integrations remain optional. Debian/Kali
+package metadata is under [`debian/`](debian/), with a complete
+[New Tool Request draft](docs/kali-new-tool-request.md).
 
 ## Security Policy
 

@@ -1,0 +1,3 @@
+Test-Command: stratus-ai --version && stratus-ai --help
+Depends: @
+Restrictions: superficial

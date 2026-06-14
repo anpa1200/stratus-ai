@@ -1,0 +1,28 @@
+.TH STRATUS-AI 1 "June 2026" "stratus-ai 0.2.0" "User Commands"
+.SH NAME
+stratus-ai \- assess cloud and external security exposure
+.SH SYNOPSIS
+.B stratus-ai
+.RI [ options ]
+.SH DESCRIPTION
+StratusAI performs cloud and external security assessments with optional AI
+synthesis. External scans and raw JSON output work without an AI API key.
+.SH OPTIONS
+.TP
+.BR \-\-mode " " MODE
+Select internal, external, or both.
+.TP
+.BR \-\-target " " HOST
+Set the hostname or IP for external assessment.
+.TP
+.B \-\-no-ai
+Skip AI analysis and write raw scanner output.
+.TP
+.BR \-\-provider " " PROVIDER
+Select aws or gcp for cloud assessment.
+.SH EXAMPLE
+.B stratus-ai --mode external --target example.org --no-ai
+.SH AUTHOR
+Andrey Pautov <1200km@gmail.com>
+.SH LICENSE
+MIT

@@ -15,6 +15,7 @@ from assessment.runner import run_scanners
 from assessment.ai.analyzer import analyze_modules, synthesize
 from assessment.ai.client import InsufficientCreditsError
 from assessment.config import DEFAULT_MODEL, DEFAULT_AWS_REGIONS
+from assessment import __version__
 
 
 def _resolve_anthropic_key() -> str:
@@ -68,6 +69,7 @@ def _setup_logging(verbose: bool):
 
 
 @click.command()
+@click.version_option(__version__)
 @click.option("--provider", default="aws", type=click.Choice(["aws", "gcp", "azure"]),
               show_default=True, help="Cloud provider to assess")
 @click.option("--mode", default="both", type=click.Choice(["internal", "external", "both"]),

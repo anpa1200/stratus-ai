@@ -1,0 +1,34 @@
+Source: stratus-ai
+Section: utils
+Priority: optional
+Maintainer: Andrey Pautov <1200km@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-click,
+ python3-requests,
+ python3-setuptools
+Standards-Version: 4.7.0
+Homepage: https://github.com/anpa1200/stratus-ai
+Vcs-Browser: https://github.com/anpa1200/stratus-ai
+Vcs-Git: https://github.com/anpa1200/stratus-ai.git
+Rules-Requires-Root: no
+
+Package: stratus-ai
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ python3-click,
+ python3-requests
+Recommends:
+ dnsutils,
+ nmap,
+ python3-boto3,
+ python3-google-auth
+Description: cloud and external security assessment with optional AI
+ StratusAI performs AWS, GCP, and external exposure assessments. Its core
+ external scanner and raw JSON output work without an AI API key; cloud SDK
+ and AI integrations are optional.

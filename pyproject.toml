@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stratus-ai"
+version = "0.2.0"
+description = "Multi-cloud and external security assessment with optional AI synthesis."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Andrey Pautov", email = "1200km@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = ["click>=8.1", "requests>=2.31"]
+keywords = ["aws-security", "cloud-security", "gcp-security", "pentesting"]
+
+[project.optional-dependencies]
+aws = ["boto3>=1.35", "botocore>=1.35"]
+gcp = ["google-auth>=2.28", "google-api-python-client>=2.120", "google-cloud-storage>=2.16", "google-cloud-secret-manager>=2.20"]
+ai = ["anthropic>=0.40"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.6", "moto[iam,s3,ec2,lambda,kms,secretsmanager,sts,ecs]>=5.0"]
+
+[project.scripts]
+stratus-ai = "assessment.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/anpa1200/stratus-ai"
+Documentation = "https://medium.com/@1200km/stratusai-i-built-an-ai-powered-cloud-security-scanner-for-aws-and-gcp-heres-everything-89c6702d3b84"
+Repository = "https://github.com/anpa1200/stratus-ai"
+
+[tool.setuptools.packages.find]
+include = ["assessment*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

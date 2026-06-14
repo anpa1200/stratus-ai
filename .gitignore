@@ -7,6 +7,10 @@ output/
 *.md~
 .venv/
 venv/
+.pybuild/
+*.egg-info/
+build/
+dist/
 
 # Terraform state and secrets — never commit these
 terraform/.terraform/
